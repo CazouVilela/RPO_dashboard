@@ -210,7 +210,7 @@ BEGIN
                         ''1 day''::INTERVAL
                     ) AS d(dt)
                     WHERE EXTRACT(DOW FROM d.dt) NOT IN (0, 6)
-                      AND NOT EXISTS (SELECT 1 FROM %I."USO_feriados" f WHERE TO_DATE(f."Data", ''DD/MM/YYYY'') = d.dt::DATE))
+                      AND NOT EXISTS (SELECT 1 FROM %I."USO_feriados" f WHERE TO_DATE(f."Data", %L) = d.dt::DATE))
                 ELSE (
                     TO_DATE((SELECT vg3."Start_Date__Admission_" FROM %I.%I vg3 WHERE TRIM(vg3."ID_Position_ADP") = TRIM(hcs.requisicao) LIMIT 1), %L) - hcs.data_abertura_vaga
                 )::INTEGER
@@ -220,8 +220,8 @@ BEGIN
            p_schema, v_tabela_vagas,           -- 5-6: subquery para verificar regex
            v_tipo_contagem,                    -- 7: tipo contagem
            p_schema, v_tabela_vagas, v_formato_pg,  -- 8-10: subquery para TO_DATE no generate_series
-           p_schema,                           -- 11: feriados
-           p_schema, v_tabela_vagas, v_formato_pg); -- 12-14: subquery para TO_DATE no ELSE
+           p_schema, v_formato_pg,             -- 11-12: feriados schema e formato
+           p_schema, v_tabela_vagas, v_formato_pg); -- 13-15: subquery para TO_DATE no ELSE
     ELSE
         v_resultado := v_resultado || 'waiting to start: DESATIVADO (não é semper_laser)' || E'\n';
         v_waiting_to_start_sql := '';
@@ -361,7 +361,7 @@ BEGIN
                         ''1 day''::INTERVAL
                     ) AS d(dt)
                     WHERE EXTRACT(DOW FROM d.dt) NOT IN (0, 6)
-                      AND NOT EXISTS (SELECT 1 FROM %I."USO_feriados" f WHERE TO_DATE(f."Data", ''DD/MM/YYYY'') = d.dt::DATE))
+                      AND NOT EXISTS (SELECT 1 FROM %I."USO_feriados" f WHERE TO_DATE(f."Data", %L) = d.dt::DATE))
                 ELSE (hcs.created_at::DATE - hcs.data_abertura_vaga)::INTEGER
             END AS dias_abertura_ate_status,
             -- dias_no_status: dias entre created_at (inicio) e status_fim (ou hoje)
@@ -375,7 +375,7 @@ BEGIN
                         ''1 day''::INTERVAL
                     ) AS d(dt)
                     WHERE EXTRACT(DOW FROM d.dt) NOT IN (0, 6)
-                      AND NOT EXISTS (SELECT 1 FROM %I."USO_feriados" f WHERE TO_DATE(f."Data", ''DD/MM/YYYY'') = d.dt::DATE))
+                      AND NOT EXISTS (SELECT 1 FROM %I."USO_feriados" f WHERE TO_DATE(f."Data", %L) = d.dt::DATE))
                 ELSE (COALESCE(hcs.status_fim, CURRENT_DATE) - hcs.created_at::DATE)::INTEGER
             END AS dias_no_status,
             -- ultimo_filled: indica se é o último registro Filled da requisição
@@ -408,15 +408,19 @@ BEGIN
        v_colunas_hcs,                                  -- 17: colunas dinâmicas (hcs.col1, ...)
        v_geo_local_select,                             -- 18: geo_local no SELECT final (condicional)
        p_schema, p_schema, p_schema,                   -- 19-21: USO_statusVagas (sucesso_status)
-       v_tipo_contagem, p_schema,                      -- 22-23: tipo_contagem, feriados (dias_abertura_ate_status)
-       v_tipo_contagem, p_schema,                      -- 24-25: tipo_contagem, feriados (dias_no_status)
-       p_schema,                                       -- 26: USO_statusVagas (ultimo_filled)
-       v_dias_ate_inicio_sql);                         -- 27: dias_ate_inicio (condicional)
+       v_tipo_contagem, p_schema, v_formato_pg,        -- 22-24: tipo_contagem, feriados schema, feriados formato (dias_abertura_ate_status)
+       v_tipo_contagem, p_schema, v_formato_pg,        -- 25-27: tipo_contagem, feriados schema, feriados formato (dias_no_status)
+       p_schema,                                       -- 28: USO_statusVagas (ultimo_filled)
+       v_dias_ate_inicio_sql);                         -- 29: dias_ate_inicio (condicional)
 
     EXECUTE v_sql;
 
     EXECUTE format('SELECT COUNT(*) FROM %I."MV_CONSUMO_historicoVagas"', p_schema) INTO v_count;
-    v_resultado := v_resultado || 'MV_CONSUMO_historicoVagas criada com ' || v_count || ' registros';
+    v_resultado := v_resultado || 'MV_CONSUMO_historicoVagas criada com ' || v_count || ' registros' || E'\n';
+
+    -- GRANT: Permissões para rpo_user
+    EXECUTE format('GRANT SELECT ON %I."MV_CONSUMO_historicoVagas" TO rpo_user', p_schema);
+    v_resultado := v_resultado || 'Permissões concedidas para rpo_user';
 
     RETURN v_resultado;
 END;

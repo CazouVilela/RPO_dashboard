@@ -485,7 +485,7 @@ BEGIN
                     WHERE EXTRACT(DOW FROM d.dt) NOT IN (0, 6)
                       AND NOT EXISTS (
                           SELECT 1 FROM %I."USO_feriados" f
-                          WHERE TO_DATE(f."Data", ''DD/MM/YYYY'') = d.dt::DATE
+                          WHERE TO_DATE(f."Data", %L) = d.dt::DATE
                       )
                 )
                 ELSE (
@@ -518,7 +518,7 @@ BEGIN
                     WHERE EXTRACT(DOW FROM d.dt) NOT IN (0, 6)
                       AND NOT EXISTS (
                           SELECT 1 FROM %I."USO_feriados" f
-                          WHERE TO_DATE(f."Data", ''DD/MM/YYYY'') = d.dt::DATE
+                          WHERE TO_DATE(f."Data", %L) = d.dt::DATE
                       )
                 )
                 ELSE (
@@ -598,8 +598,8 @@ BEGIN
        v_colunas_vagas,                                -- colunas sem prefixo (para vagas_filtradas)
        v_colunas_vagas_v,                              -- colunas com prefixo v. (para dados_base)
        p_schema, p_schema, p_schema, p_schema,         -- schema para SLA_da_abertura (unpivot, statusVagas, historicoVagas, statusVagas)
-       v_tipo_contagem, p_schema,                      -- tipo_contagem para dias_no_status, schema feriados
-       v_tipo_contagem, v_formato_pg, p_schema, v_formato_pg,  -- tipo_contagem para dias_da_abertura, formato, schema feriados, formato
+       v_tipo_contagem, p_schema, v_formato_pg,        -- tipo_contagem para dias_no_status, schema feriados, formato feriados
+       v_tipo_contagem, v_formato_pg, p_schema, v_formato_pg, v_formato_pg,  -- tipo_contagem, formato abertura, schema feriados, formato feriados, formato abertura final
        p_schema,                                       -- schema para candidatos_considerados (vw_candidatos_nomeFixo)
        v_geo_select,                                   -- campos geo (vazio se não tiver USO_Listas)
        v_geo_join,                                     -- join USO_Listas (vazio se não existir)
