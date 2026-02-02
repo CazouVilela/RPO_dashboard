@@ -247,6 +247,14 @@ BEGIN
     EXECUTE v_sql;
     v_resultado := v_resultado || 'Materialized view mv_SLAs criada' || E'\n';
 
+    -- ============================================================
+    -- GRANT: Permissões para rpo_user em todos os objetos criados
+    -- ============================================================
+    EXECUTE format('GRANT SELECT ON %I."vw_vagas_nomeFixo" TO rpo_user', p_schema);
+    EXECUTE format('GRANT SELECT ON %I."vw_candidatos_nomeFixo" TO rpo_user', p_schema);
+    EXECUTE format('GRANT SELECT ON %I."mv_SLAs" TO rpo_user', p_schema);
+    v_resultado := v_resultado || 'Permissões concedidas para rpo_user' || E'\n';
+
     RETURN v_resultado;
 END;
 $$ LANGUAGE plpgsql;
@@ -345,7 +353,24 @@ BEGIN
     END IF;
 
     -- ============================================================
-    -- Buscar colunas de vw_vagas_nomeFixo para excluir rn do resultado
+    -- PRIMEIRO: Buscar colunas marcadas como 'date' no dicionário
+    -- (necessário ANTES de construir v_colunas_vagas_v)
+    -- ============================================================
+    v_resultado := v_resultado || 'Colunas tipo date no dicionário:' || E'\n';
+
+    FOR v_col IN
+        EXECUTE format(
+            'SELECT "nomeFixo" FROM %I."USO_dicionarioVagas" WHERE LOWER("tipoDoDado") = ''date''',
+            p_schema
+        )
+    LOOP
+        v_colunas_date := array_append(v_colunas_date, v_col."nomeFixo");
+        v_resultado := v_resultado || '  - ' || v_col."nomeFixo" || E'\n';
+    END LOOP;
+
+    -- ============================================================
+    -- Buscar colunas de vw_vagas_nomeFixo
+    -- Aplicar conversão TO_DATE nas colunas marcadas como date
     -- ============================================================
     FOR v_col IN
         SELECT column_name
@@ -358,29 +383,28 @@ BEGIN
             v_colunas_vagas := v_colunas_vagas || ', ';
             v_colunas_vagas_v := v_colunas_vagas_v || ', ';
         END IF;
-        v_colunas_vagas := v_colunas_vagas || v_col.column_name;           -- sem prefixo
-        v_colunas_vagas_v := v_colunas_vagas_v || 'v.' || v_col.column_name;  -- com prefixo v.
-    END LOOP;
 
-    -- ============================================================
-    -- Criar materialized view mv_CONSUMO_vagas
-    -- O JOIN com mv_SLAs é dinâmico
-    -- Novos SLAs/status são reconhecidos no REFRESH
-    -- ============================================================
-    -- ============================================================
-    -- Buscar colunas marcadas como 'date' no dicionário de vagas
-    -- e gerar conversões dinâmicas
-    -- ============================================================
-    v_resultado := v_resultado || 'Colunas tipo date no dicionário:' || E'\n';
-
-    FOR v_col IN
-        EXECUTE format(
-            'SELECT "nomeFixo" FROM %I."USO_dicionarioVagas" WHERE LOWER("tipoDoDado") = ''date''',
-            p_schema
-        )
-    LOOP
-        v_colunas_date := array_append(v_colunas_date, v_col."nomeFixo");
-        v_resultado := v_resultado || '  - ' || v_col."nomeFixo" || E'\n';
+        -- Verificar se é coluna de data que precisa conversão
+        IF v_col.column_name = ANY(v_colunas_date) THEN
+            -- Para vagas_filtradas: manter como texto (usado em ORDER BY)
+            v_colunas_vagas := v_colunas_vagas || v_col.column_name;
+            -- Para dados_base: converter para DATE usando formato configurado
+            v_colunas_vagas_v := v_colunas_vagas_v || format(
+                'CASE
+                    WHEN v.%I IS NULL OR TRIM(v.%I) = '''' THEN NULL
+                    WHEN v.%I ~ ''^\d{1,2}/\d{1,2}/\d{4}$'' THEN TO_DATE(v.%I, %L)
+                    WHEN v.%I ~ ''^\d{4}-\d{2}-\d{2}$'' THEN TO_DATE(v.%I, ''YYYY-MM-DD'')
+                    ELSE NULL
+                END AS %I',
+                v_col.column_name, v_col.column_name,
+                v_col.column_name, v_col.column_name, v_formato_pg,
+                v_col.column_name, v_col.column_name,
+                v_col.column_name
+            );
+        ELSE
+            v_colunas_vagas := v_colunas_vagas || v_col.column_name;
+            v_colunas_vagas_v := v_colunas_vagas_v || 'v.' || v_col.column_name;
+        END IF;
     END LOOP;
 
     v_sql := format('
@@ -585,7 +609,11 @@ BEGIN
 
     -- Contar registros
     EXECUTE format('SELECT COUNT(*) FROM %I."mv_CONSUMO_vagas"', p_schema) INTO v_count;
-    v_resultado := v_resultado || 'Materialized view mv_CONSUMO_vagas criada com ' || v_count || ' registros';
+    v_resultado := v_resultado || 'Materialized view mv_CONSUMO_vagas criada com ' || v_count || ' registros' || E'\n';
+
+    -- GRANT: Permissões para rpo_user
+    EXECUTE format('GRANT SELECT ON %I."mv_CONSUMO_vagas" TO rpo_user', p_schema);
+    v_resultado := v_resultado || 'Permissões concedidas para rpo_user';
 
     RETURN v_resultado;
 END;
