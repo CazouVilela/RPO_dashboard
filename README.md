@@ -1,14 +1,27 @@
 # RPO_dashboard
 
-## Descrição
-Dashboard para visualização e análise de dados do RPO Hub.
+Dashboard para visualização e análise de dados das planilhas de RPO criadas no projeto RPO-V4.
+
+## Estrutura
+
+Este projeto controla dashboards diferentes para clientes diferentes. Cada dashboard possui:
+
+| Parâmetro | Descrição |
+|-----------|-----------|
+| cliente | Identificador único do cliente |
+| planilha | URL da planilha Google Sheets (referência) |
+| banco | Banco PostgreSQL onde os dados estão |
+| schema | Schema no banco onde os dados estão |
+| configuracoes | Tabela de configurações específicas |
+
+## Clientes Cadastrados
+
+- **semper_laser** - Schema: `RPO_semper_laser`
 
 ## Documentação
 
-Toda a documentação detalhada deste projeto está na pasta [`/documentacao`](./documentacao)
+Toda a documentação detalhada está na pasta [`/documentacao`](./documentacao)
 
-## Instalação
-[Instruções de instalação]
+## Configuração
 
-## Uso
-[Instruções de uso]
+As configurações dos dashboards estão em `config/dashboards.yaml`

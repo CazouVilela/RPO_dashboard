@@ -1,0 +1,73 @@
+# Configuração dos Dashboards RPO
+# Cada entrada representa um dashboard de cliente
+
+# Mapeamento padrão de configurações (carregado da tabela configuracoes)
+# A tabela possui: Coluna Configuracao | Coluna Valor
+config_mapping:
+  "Nome da aba de controle vagas":
+    target: tabela_vagas
+    format: "RAW_AIRBYTE_{valor}"  # espaços substituídos por _
+  "Nome da aba de controle candidatos":
+    target: tabela_candidatos
+    format: "RAW_AIRBYTE_{valor}"
+  "Tipo da contagem de dias":
+    target: tipo_contagem_dias
+    values: ["dias corridos", "dias úteis"]
+    # Se dias úteis: excluir finais de semana + RAW_AIRBYTE_feriados
+  "Formato das datas":
+    target: formato_datas
+    values: ["americano", "brasileiro"]
+    # americano: MM/DD/YYYY
+    # brasileiro: DD/MM/YYYY
+
+# Configurações ignoradas (não utilizadas no dashboard)
+config_ignoradas:
+  - "Nome da aba do Form de inserção de vagas"
+  - "Tamanho dicionário vagas"
+  - "Tamanho dicionário candidatos"
+  - "Nome do schema no banco"
+
+# Tabelas fixas presentes em todos os schemas
+tabelas_fixas:
+  RAW_AIRBYTE_feriados: "Feriados (usado se tipo = dias úteis)"
+  RAW_AIRBYTE_statusVagas: "Status disponíveis para vagas e SLAs"
+  RAW_AIRBYTE_statusCandidatos: "Status disponíveis para candidatos"
+  RAW_dicionarioVagas: "Dicionário de nomenclatura de colunas das vagas"
+  RAW_dicionarioCandidatos: "Dicionário de nomenclatura de colunas dos candidatos"
+  USO_historicoVagas: "Histórico de andamento das vagas"
+  USO_historicoCandidatos: "Histórico de andamento dos candidatos"
+  RAW_AIRBYTE_FALLBACK_historicoVagas: "Fallback do histórico de vagas"
+  RAW_AIRBYTE_FALLBACK_historicoCandidatos: "Fallback do histórico de candidatos"
+
+dashboards:
+  semper_laser:
+    cliente: semper_laser
+    planilha: "https://docs.google.com/spreadsheets/d/1ofrXUDXfqJgxUUi_ooEwBdw60T4NS-mqqICKzkERIS0/edit?gid=369670849#gid=369670849"
+    banco: HUB
+    schema: RPO_semper_laser
+    configuracoes: RAW_AIRBYTE_configuracoesGerais
+    status: em_desenvolvimento
+    data_criacao: "2026-01-22"
+    # Configurações carregadas do banco:
+    tabelas:
+      vagas: RAW_AIRBYTE_Job_Openings_Control
+      candidatos: RAW_AIRBYTE_Candidates_Control
+      feriados: RAW_AIRBYTE_feriados
+    tipo_contagem_dias: "Dias úteis"
+    formato_datas: "americano"  # MM/DD/YYYY
+
+  cielo:
+    cliente: cielo
+    planilha: "https://docs.google.com/spreadsheets/d/1swF0vtbgftzFIKXFnUAf3Osn9tkR3XB1J-Y3zxrhTN0/edit?gid=0#gid=0"
+    banco: HUB
+    schema: RPO_cielo
+    configuracoes: RAW_AIRBYTE_configuracoesGerais
+    status: em_desenvolvimento
+    data_criacao: "2026-01-22"
+    # Configurações carregadas do banco:
+    tabelas:
+      vagas: RAW_AIRBYTE_vagas
+      candidatos: RAW_AIRBYTE_candidatos
+      feriados: RAW_AIRBYTE_feriados
+    tipo_contagem_dias: "Dias úteis"
+    formato_datas: "brasileiro"  # DD/MM/YYYY
