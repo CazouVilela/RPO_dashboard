@@ -1,19 +1,26 @@
 -- ============================================================
--- Função: criar_mv_consumo_candidatos(schema_name)
+-- Funcao: public.dashboard_criar_mv_consumo_candidatos(p_schema, p_versao)
 -- Cria a materialized view MV_CONSUMO_candidatos
 -- ============================================================
--- VERSÃO 1.0 - DINÂMICA
--- Expande o campo operacao_posicoesconsideradas em múltiplas linhas
--- Uma linha para cada requisição considerada pelo candidato
+-- VERSAO 2.0 - COM SUPORTE A VERSAO
+-- Quando p_versao = 'V2': tabelas fonte V2_USO_*, objetos V2_MV_*, V2_vw_*
+-- Quando p_versao IS NULL: comportamento identico ao anterior (sem prefixo)
 -- ============================================================
--- Formatos suportados:
--- - cielo: [REQUISICAO] - TITULO (local) --- <STATUS>
--- - semper_laser: TITULO --- (loja) --- REQUISICAO
+-- Expande o campo operacao_posicoesconsideradas em multiplas linhas
+-- Uma linha para cada requisicao considerada pelo candidato
 -- ============================================================
 
-CREATE OR REPLACE FUNCTION criar_mv_consumo_candidatos(p_schema TEXT)
+DROP FUNCTION IF EXISTS public.dashboard_criar_mv_consumo_candidatos(TEXT, TEXT);
+DROP FUNCTION IF EXISTS criar_mv_consumo_candidatos(TEXT);
+
+CREATE OR REPLACE FUNCTION public.dashboard_criar_mv_consumo_candidatos(p_schema TEXT, p_versao TEXT DEFAULT NULL)
 RETURNS TEXT AS $$
 DECLARE
+    v_prefixo TEXT;
+    -- Objetos de saida e cross-refs (versionados)
+    v_out_vw_candidatos TEXT;
+    v_out_mv_candidatos TEXT;
+    -- Variaveis de trabalho
     v_sql TEXT;
     v_resultado TEXT := '';
     v_count INTEGER;
@@ -23,6 +30,23 @@ DECLARE
     v_formato TEXT;
 BEGIN
     -- ============================================================
+    -- Logica de prefixo
+    -- ============================================================
+    IF p_versao IS NOT NULL AND TRIM(p_versao) <> '' THEN
+        v_prefixo := TRIM(p_versao) || '_';
+    ELSE
+        v_prefixo := '';
+    END IF;
+
+    -- Objetos de saida e cross-refs
+    v_out_vw_candidatos := v_prefixo || 'vw_candidatos_nomeFixo';
+    v_out_mv_candidatos := v_prefixo || 'MV_CONSUMO_candidatos';
+
+    IF v_prefixo <> '' THEN
+        v_resultado := v_resultado || 'Versao: ' || p_versao || ' (prefixo: ' || v_prefixo || ')' || E'\n';
+    END IF;
+
+    -- ============================================================
     -- Detectar formato baseado no schema
     -- ============================================================
     IF p_schema = 'RPO_cielo' THEN
@@ -30,17 +54,16 @@ BEGIN
     ELSIF p_schema = 'RPO_semper_laser' THEN
         v_formato := 'semper_laser';
     ELSE
-        -- Tentar detectar automaticamente pelo conteúdo
         EXECUTE format(
             'SELECT CASE
                 WHEN EXISTS (
-                    SELECT 1 FROM %I."vw_candidatos_nomeFixo"
+                    SELECT 1 FROM %I.%I
                     WHERE operacao_posicoesconsideradas LIKE ''%%[%%]%%''
                     LIMIT 1
                 ) THEN ''cielo''
                 ELSE ''semper_laser''
             END',
-            p_schema
+            p_schema, v_out_vw_candidatos
         ) INTO v_formato;
     END IF;
 
@@ -53,7 +76,7 @@ BEGIN
         SELECT column_name
         FROM information_schema.columns
         WHERE table_schema = p_schema
-          AND table_name = 'vw_candidatos_nomeFixo'
+          AND table_name = v_out_vw_candidatos
         ORDER BY ordinal_position
     LOOP
         IF v_colunas <> '' THEN
@@ -64,29 +87,26 @@ BEGIN
         v_colunas_select := v_colunas_select || format('c.%I', v_col.column_name);
     END LOOP;
 
-    v_resultado := v_resultado || 'Colunas encontradas em vw_candidatos_nomeFixo' || E'\n';
+    v_resultado := v_resultado || 'Colunas encontradas em ' || v_out_vw_candidatos || E'\n';
 
     -- ============================================================
     -- Criar a MV baseado no formato
     -- ============================================================
     IF v_formato = 'cielo' THEN
-        -- Formato cielo: [REQUISICAO] - TITULO (local) --- <STATUS>
-        -- Separador: ", [" entre posições
         v_sql := format('
-            DROP MATERIALIZED VIEW IF EXISTS %I."MV_CONSUMO_candidatos";
+            DROP MATERIALIZED VIEW IF EXISTS %I.%I;
 
-            CREATE MATERIALIZED VIEW %I."MV_CONSUMO_candidatos" AS
+            CREATE MATERIALIZED VIEW %I.%I AS
             WITH candidatos_com_posicoes AS (
                 SELECT
                     %s,
-                    -- Extrai cada posição separada por ", ["
                     UNNEST(
                         STRING_TO_ARRAY(
                             operacao_posicoesconsideradas,
                             '', [''
                         )
                     ) AS posicao_raw
-                FROM %I."vw_candidatos_nomeFixo" c
+                FROM %I.%I c
                 WHERE operacao_posicoesconsideradas IS NOT NULL
                   AND TRIM(operacao_posicoesconsideradas) <> ''''
             ),
@@ -94,8 +114,6 @@ BEGIN
                 SELECT
                     %s,
                     posicao_raw,
-                    -- Extrai a requisição dos colchetes
-                    -- Remove [ do início se existir e ] do final
                     TRIM(
                         REGEXP_REPLACE(
                             REGEXP_REPLACE(posicao_raw, ''^\['', ''''),
@@ -112,34 +130,30 @@ BEGIN
               AND TRIM(requisicao_extraida) <> ''''
               AND requisicao_extraida ~ ''^\d+$''
             ORDER BY requisicao_extraida, c.id_candidato
-        ', p_schema, p_schema,
-           v_colunas_select, p_schema,
+        ', p_schema, v_out_mv_candidatos,
+           p_schema, v_out_mv_candidatos,
+           v_colunas_select, p_schema, v_out_vw_candidatos,
            v_colunas_select,
            v_colunas_select);
     ELSE
-        -- Formato semper_laser: TITULO --- (loja) --- REQUISICAO
-        -- Separador: ", " entre posições
-        -- Requisição está no final após "--- "
         v_sql := format('
-            DROP MATERIALIZED VIEW IF EXISTS %I."MV_CONSUMO_candidatos";
+            DROP MATERIALIZED VIEW IF EXISTS %I.%I;
 
-            CREATE MATERIALIZED VIEW %I."MV_CONSUMO_candidatos" AS
+            CREATE MATERIALIZED VIEW %I.%I AS
             WITH candidatos_com_posicoes AS (
                 SELECT
                     %s,
-                    -- Divide por ", " para separar cada posição
                     UNNEST(
                         STRING_TO_ARRAY(
                             operacao_posicoesconsideradas,
                             '', ''
                         )
                     ) AS posicao_raw
-                FROM %I."vw_candidatos_nomeFixo" c
+                FROM %I.%I c
                 WHERE operacao_posicoesconsideradas IS NOT NULL
                   AND TRIM(operacao_posicoesconsideradas) <> ''''
             ),
             posicoes_filtradas AS (
-                -- Filtra apenas as partes que contêm " --- " (são posições completas)
                 SELECT
                     %s,
                     posicao_raw
@@ -150,7 +164,6 @@ BEGIN
                 SELECT
                     %s,
                     posicao_raw,
-                    -- Extrai a requisição (última parte após "--- ")
                     TRIM(
                         REVERSE(
                             SPLIT_PART(
@@ -170,8 +183,9 @@ BEGIN
               AND TRIM(requisicao_extraida) <> ''''
               AND requisicao_extraida ~ ''^\d+$''
             ORDER BY requisicao_extraida, c.id_candidato
-        ', p_schema, p_schema,
-           v_colunas_select, p_schema,
+        ', p_schema, v_out_mv_candidatos,
+           p_schema, v_out_mv_candidatos,
+           v_colunas_select, p_schema, v_out_vw_candidatos,
            v_colunas_select,
            v_colunas_select,
            v_colunas_select);
@@ -180,8 +194,12 @@ BEGIN
     EXECUTE v_sql;
 
     -- Contar registros
-    EXECUTE format('SELECT COUNT(*) FROM %I."MV_CONSUMO_candidatos"', p_schema) INTO v_count;
-    v_resultado := v_resultado || 'Materialized view MV_CONSUMO_candidatos criada com ' || v_count || ' registros';
+    EXECUTE format('SELECT COUNT(*) FROM %I.%I', p_schema, v_out_mv_candidatos) INTO v_count;
+    v_resultado := v_resultado || 'Materialized view ' || v_out_mv_candidatos || ' criada com ' || v_count || ' registros' || E'\n';
+
+    -- GRANT: Permissoes para rpo_user
+    EXECUTE format('GRANT SELECT ON %I.%I TO rpo_user', p_schema, v_out_mv_candidatos);
+    v_resultado := v_resultado || 'Permissoes concedidas para rpo_user';
 
     RETURN v_resultado;
 END;
@@ -189,9 +207,10 @@ $$ LANGUAGE plpgsql;
 
 -- ============================================================
 -- Exemplo de uso:
--- SELECT criar_mv_consumo_candidatos('RPO_cielo');
--- SELECT criar_mv_consumo_candidatos('RPO_semper_laser');
+-- SELECT dashboard_criar_mv_consumo_candidatos('RPO_cielo');
+-- SELECT dashboard_criar_mv_consumo_candidatos('RPO_cielo', 'V2');
 --
 -- Para atualizar a materialized view:
 -- REFRESH MATERIALIZED VIEW "RPO_cielo"."MV_CONSUMO_candidatos";
+-- REFRESH MATERIALIZED VIEW "RPO_cielo"."V2_MV_CONSUMO_candidatos";
 -- ============================================================

@@ -11,7 +11,7 @@ Este projeto controla dashboards diferentes para clientes diferentes.
 
 ## Informações Principais
 
-**Versão Atual**: v0.9.9
+**Versão Atual**: v1.0.0
 **Stack**: Python, PostgreSQL, Streamlit (a definir)
 **Status**: Em desenvolvimento
 
@@ -49,7 +49,8 @@ Cada dashboard possui os seguintes parâmetros:
 - `USO_Listas` - Mapeamento lojas -> cidade/estado (38 registros)
 
 **Tabelas com dados importados (NÃO RECRIAR):**
-- `USO_historicoVagas` - Contém dados importados do HISTORICO_ORIGINAL (~350+ registros). Não recriar na atualização do dashboard.
+- `USO_historicoVagas` - Contém dados importados do HISTORICO_ORIGINAL (~400 registros). Fonte da verdade, carregados do PG para planilha. Não recriar.
+- `USO_historicoCandidatos` - Contém 170 registros importados da planilha (2026-02-03). Estrutura normalizada igual a cielo. Não recriar.
 
 **Tipo contagem:** Dias úteis
 **Formato datas:** americano (MM/DD/YYYY)
@@ -85,6 +86,37 @@ Cada dashboard possui os seguintes parâmetros:
 - `mv_CONSUMO_vagas` - 160 registros (dados processados para dashboard)
 
 **SLAs disponíveis:** CP, DDN, Corporativo, Grandes_contas
+
+**Campos time_to_fill e time_to_start (calculados diretamente em USO_historicoVagas):**
+- `time_to_fill`: dias úteis (excl. feriados) de data_abertura até created_at do status FECHADA
+- `time_to_start`: dias úteis (excl. feriados) de data_abertura até data_admissao (da vw_vagas_nomeFixo)
+- Cielo não possui variantes `_no_holidays` (diferente de semper_laser)
+
+**Correções no dicionário cielo:**
+- `selecionado_empregado` → nomeAmigavel = `Selecionado_estava_empregado_`
+- `selecionado_PCD` → nomeAmigavel = `Selecionado_e_PCD_`
+- `contatos_candidato` (candidatos) → nomeAmigavel = `Telefone__E_mail`
+
+**Problema de qualidade de dados cielo:**
+- 13/51 registros FECHADA têm created_at=2025-09-12 (data de importação em lote, não data real de fechamento)
+- Datas futuras corrigidas (ver Troubleshooting: Corrupção de dados históricos)
+- Impacta cálculos de time_to_fill (média distorcida)
+
+**V2 Dashboard (RPO_cielo):**
+
+Tabelas V2 criadas com prefixo `V2_`:
+| Tabela V2 | Fonte | Registros |
+|-----------|-------|-----------|
+| V2_USO_vagas | RAW_AIRBYTE_vagas | 172 |
+| V2_USO_candidatos | RAW_AIRBYTE_candidatos | 1320 |
+| V2_USO_statusVagas | RAW_AIRBYTE_statusVagas | 15 |
+| V2_USO_statusCandidatos | RAW_AIRBYTE_statusCandidatos | 20 |
+| V2_USO_configuracoesGerais | RAW_AIRBYTE_configuracoesGerais | 8 |
+| V2_USO_feriados | RAW_AIRBYTE_feriados | 30 |
+| V2_USO_dicionarioVagas | RAW_dicionarioVagas | 43 |
+| V2_USO_dicionarioCandidatos | RAW_dicionarioCandidatos | 11 |
+| V2_USO_historicoVagas | USO_historicoVagas | 589 |
+| V2_USO_historicoCandidatos | USO_historicoCandidatos | 1107 |
 
 <!-- CHAPTER: 3 Tabela de Configurações -->
 
@@ -275,12 +307,8 @@ DROP TABLE IF EXISTS "RPO_cliente"."USO_feriados";
 CREATE TABLE "RPO_cliente"."USO_feriados" AS
 SELECT * FROM "RPO_cliente"."RAW_AIRBYTE_feriados";
 
--- **IMPORTANTE**: Verificar formato de datas nos feriados!
--- A função criar_mv_consumo_vagas espera formato DD/MM/YYYY.
--- Se os dados vierem em formato americano (MM/DD/YYYY), converter:
--- UPDATE "RPO_cliente"."USO_feriados"
--- SET "Data" = TO_CHAR(TO_DATE("Data", 'MM/DD/YYYY'), 'DD/MM/YYYY')
--- WHERE "Data" ~ '^\d{2}/\d{2}/\d{4}$';
+-- **NOTA**: As funções agora usam o formato configurado em USO_configuracoesGerais
+-- para parsing de feriados. Não é necessário converter manualmente.
 
 -- 1.7 Tabela de vagas (nome vem de USO_configuracoesGerais)
 -- Verificar nome em: SELECT "Valor" FROM "RPO_cliente"."USO_configuracoesGerais"
@@ -319,6 +347,25 @@ SELECT * FROM "RPO_cliente"."RAW_AIRBYTE_FALLBACK_historicoCandidatos";
 
 -- 1.13 CUSTOMIZAÇÕES (se aplicável ao cliente)
 -- Ver seção "Customizações por Cliente" para detalhes
+
+-- ============================================================
+-- 1.14 PERMISSÕES PARA rpo_user (OBRIGATÓRIO)
+-- ============================================================
+-- O usuário rpo_user é usado pela API do RPO-V4 para acessar os dados.
+-- TODAS as tabelas USO_ devem ter permissões concedidas.
+
+-- Permissões no schema
+GRANT USAGE ON SCHEMA "RPO_cliente" TO rpo_user;
+
+-- Permissões em TODAS as tabelas do schema
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "RPO_cliente" TO rpo_user;
+
+-- Permissões em TODAS as sequences do schema (necessário para INSERT com SERIAL/IDENTITY)
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA "RPO_cliente" TO rpo_user;
+
+-- Permissões padrão para objetos futuros
+ALTER DEFAULT PRIVILEGES IN SCHEMA "RPO_cliente" GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO rpo_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA "RPO_cliente" GRANT USAGE, SELECT ON SEQUENCES TO rpo_user;
 ```
 
 **Tabelas customizadas por cliente:**
@@ -348,7 +395,10 @@ SELECT "City_", "Lojas_", "State_" FROM "RPO_semper_laser"."RAW_AIRBYTE_Listas";
 -- ============================================================
 -- ETAPA 2: VIEWS DINÂMICAS
 -- ============================================================
-SELECT criar_views_dashboard('RPO_cliente');
+-- V1 (sem versão):
+SELECT dashboard_criar_views('RPO_cliente');
+-- V2 (com versão):
+SELECT dashboard_criar_views('RPO_cliente', 'V2');
 ```
 
 **Resultado esperado:**
@@ -382,14 +432,17 @@ Materialized view mv_SLAs criada
 -- ETAPA 3: MATERIALIZED VIEWS (ordem obrigatória)
 -- ============================================================
 
--- 3.1 MV de Vagas (principal)
-SELECT criar_mv_consumo_vagas('RPO_cliente');
+-- V1 (sem versão):
+SELECT dashboard_criar_mv_consumo_vagas('RPO_cliente');
+SELECT dashboard_criar_mv_consumo_historico_vagas('RPO_cliente');
+SELECT dashboard_criar_mv_consumo_candidatos('RPO_cliente');
+SELECT dashboard_criar_mv_consumo_erros_vagas('RPO_cliente');
 
--- 3.2 MV de Histórico de Vagas
-SELECT criar_mv_consumo_historico_vagas('RPO_cliente');
-
--- 3.3 MV de Candidatos
-SELECT criar_mv_consumo_candidatos('RPO_cliente');
+-- V2 (com versão):
+SELECT dashboard_criar_mv_consumo_vagas('RPO_cliente', 'V2');
+SELECT dashboard_criar_mv_consumo_historico_vagas('RPO_cliente', 'V2');
+SELECT dashboard_criar_mv_consumo_candidatos('RPO_cliente', 'V2');
+SELECT dashboard_criar_mv_consumo_erros_vagas('RPO_cliente', 'V2');
 ```
 
 **Resultado esperado:**
@@ -421,12 +474,13 @@ REFRESH MATERIALIZED VIEW "RPO_cliente"."MV_CONSUMO_candidatos";
 **Objetos criados por dashboard:**
 | Objeto | Tipo | Função Criadora |
 |--------|------|-----------------|
-| vw_vagas_nomeFixo | VIEW | criar_views_dashboard() |
-| vw_candidatos_nomeFixo | VIEW | criar_views_dashboard() |
-| mv_SLAs | MATERIALIZED VIEW | criar_views_dashboard() |
-| mv_CONSUMO_vagas | MATERIALIZED VIEW | criar_mv_consumo_vagas() |
-| MV_CONSUMO_historicoVagas | MATERIALIZED VIEW | criar_mv_consumo_historico_vagas() |
-| MV_CONSUMO_candidatos | MATERIALIZED VIEW | criar_mv_consumo_candidatos() |
+| [V2_]vw_vagas_nomeFixo | VIEW | dashboard_criar_views(schema, [versao]) |
+| [V2_]vw_candidatos_nomeFixo | VIEW | dashboard_criar_views(schema, [versao]) |
+| [V2_]mv_SLAs | MATERIALIZED VIEW | dashboard_criar_views(schema, [versao]) |
+| [V2_]mv_CONSUMO_vagas | MATERIALIZED VIEW | dashboard_criar_mv_consumo_vagas(schema, [versao]) |
+| [V2_]MV_CONSUMO_historicoVagas | MATERIALIZED VIEW | dashboard_criar_mv_consumo_historico_vagas(schema, [versao]) |
+| [V2_]MV_CONSUMO_candidatos | MATERIALIZED VIEW | dashboard_criar_mv_consumo_candidatos(schema, [versao]) |
+| [V2_]MV_CONSUMO_ERROS_VAGAS | MATERIALIZED VIEW | dashboard_criar_mv_consumo_erros_vagas(schema, [versao]) |
 
 **Para atualizar dados existentes (REFRESH):**
 ```sql
@@ -440,14 +494,18 @@ REFRESH MATERIALIZED VIEW "RPO_cliente"."mv_SLAs";
 REFRESH MATERIALIZED VIEW "RPO_cliente"."mv_CONSUMO_vagas";
 REFRESH MATERIALIZED VIEW "RPO_cliente"."MV_CONSUMO_historicoVagas";
 REFRESH MATERIALIZED VIEW "RPO_cliente"."MV_CONSUMO_candidatos";
+REFRESH MATERIALIZED VIEW "RPO_cliente"."MV_CONSUMO_ERROS_VAGAS";
 ```
 
-### Função criar_views_dashboard (PostgreSQL) - VERSÃO 2.0 DINÂMICA
+### Função dashboard_criar_views (PostgreSQL) - VERSÃO 3.0 COM SUPORTE A VERSÃO
+
+**Assinatura:** `public.dashboard_criar_views(p_schema TEXT, p_versao TEXT DEFAULT NULL)`
 
 **Uso:**
 ```sql
-SELECT criar_views_dashboard('RPO_semper_laser');
-SELECT criar_views_dashboard('RPO_cielo');
+SELECT dashboard_criar_views('RPO_semper_laser');
+SELECT dashboard_criar_views('RPO_cielo');
+SELECT dashboard_criar_views('RPO_cielo', 'V2');  -- cria V2_vw_vagas_nomeFixo, V2_vw_candidatos_nomeFixo, V2_mv_SLAs
 ```
 
 **O que faz:**
@@ -496,7 +554,7 @@ View vw_candidatos_nomeFixo criada (Y colunas)
 Materialized view mv_SLAs criada
 ```
 
-**Arquivo:** `sql/funcao_criar_views_dashboard.sql`
+**Arquivo:** `sql/dashboard_criar_views.sql`
 
 **Estrutura esperada dos dicionários:**
 | Coluna | Descrição |
@@ -505,14 +563,17 @@ Materialized view mv_SLAs criada
 | nomeFixo | Nome padronizado (ex: "data_abertura") |
 | tipoDoDado | Tipo do dado (text, date, integer, etc.) |
 
-### Função criar_mv_consumo_vagas (PostgreSQL)
+### Função dashboard_criar_mv_consumo_vagas (PostgreSQL) - VERSÃO 2.0 COM SUPORTE A VERSÃO
+
+**Assinatura:** `public.dashboard_criar_mv_consumo_vagas(p_schema TEXT, p_versao TEXT DEFAULT NULL)`
 
 **Uso:**
 ```sql
-SELECT criar_mv_consumo_vagas('RPO_semper_laser');
+SELECT dashboard_criar_mv_consumo_vagas('RPO_semper_laser');
+SELECT dashboard_criar_mv_consumo_vagas('RPO_cielo', 'V2');  -- cria V2_mv_CONSUMO_vagas
 ```
 
-**Pré-requisito:** Executar `criar_views_dashboard()` antes (cria a view `mv_SLAs`)
+**Pré-requisito:** Executar `dashboard_criar_views()` antes (cria a view `[V2_]mv_SLAs`)
 
 **Parâmetros lidos da configuração:**
 - `Tipo da contagem de dias`: Define cálculo de dias úteis/corridos
@@ -644,11 +705,11 @@ LEFT JOIN "RPO_cliente"."mv_SLAs" s
   ```
   RPO_cliente_x/
   ├── USO_statusVagas              → Tabela com SLAs/status específicos deste cliente
-  ├── vw_vagas_nomeFixo            → View criada por criar_views_dashboard()
-  ├── vw_candidatos_nomeFixo       → View criada por criar_views_dashboard()
-  ├── mv_SLAs                      → MV de SLAs criada por criar_views_dashboard()
-  ├── mv_CONSUMO_vagas             → MV criada por criar_mv_consumo_vagas()
-  └── MV_CONSUMO_historicoVagas    → MV criada por criar_mv_consumo_historico_vagas()
+  ├── vw_vagas_nomeFixo            → View criada por dashboard_criar_views()
+  ├── vw_candidatos_nomeFixo       → View criada por dashboard_criar_views()
+  ├── mv_SLAs                      → MV de SLAs criada por dashboard_criar_views()
+  ├── mv_CONSUMO_vagas             → MV criada por dashboard_criar_mv_consumo_vagas()
+  └── MV_CONSUMO_historicoVagas    → MV criada por dashboard_criar_mv_consumo_historico_vagas()
   ```
 - Cada dashboard pode ter **nomes e quantidades de SLAs diferentes**
 - Cada dashboard pode ter **nomes e quantidades de status diferentes**
@@ -689,22 +750,25 @@ REFRESH MATERIALIZED VIEW "RPO_semper_laser"."mv_CONSUMO_vagas";
 -- TRIM(sv.tipo_sla) = TRIM(v.sla_utilizado)
 ```
 
-### Função criar_mv_consumo_historico_vagas (PostgreSQL) - VERSÃO 3.2 DINÂMICA
+### Função dashboard_criar_mv_consumo_historico_vagas (PostgreSQL) - VERSÃO 4.0 COM SUPORTE A VERSÃO
 
 **OBRIGATÓRIO: Esta MV deve ser criada em TODOS os dashboards.**
 
+**Assinatura:** `public.dashboard_criar_mv_consumo_historico_vagas(p_schema TEXT, p_versao TEXT DEFAULT NULL)`
+
 **Uso:**
 ```sql
-SELECT criar_mv_consumo_historico_vagas('RPO_cielo');
-SELECT criar_mv_consumo_historico_vagas('RPO_semper_laser');
+SELECT dashboard_criar_mv_consumo_historico_vagas('RPO_cielo');
+SELECT dashboard_criar_mv_consumo_historico_vagas('RPO_semper_laser');
+SELECT dashboard_criar_mv_consumo_historico_vagas('RPO_cielo', 'V2');  -- cria V2_MV_CONSUMO_historicoVagas
 ```
 
 **O que faz:**
 Cria a materialized view `MV_CONSUMO_historicoVagas` com todos os campos de `USO_historicoVagas` mais campos calculados e agregados.
 
-**Arquivo:** `sql/funcao_criar_mv_consumo_historico_vagas.sql`
+**Arquivo:** `sql/dashboard_criar_mv_consumo_historico_vagas.sql`
 
-**IMPORTANTE - Versão 3.4 Dinâmica:**
+**IMPORTANTE - Versão 3.9 Dinâmica:**
 - As colunas são lidas DINAMICAMENTE da tabela `USO_historicoVagas` de cada schema
 - Funciona com estruturas de tabela diferentes entre clientes
 - Não requer alteração no código ao adicionar novos clientes
@@ -715,14 +779,16 @@ Cria a materialized view `MV_CONSUMO_historicoVagas` com todos os campos de `USO
 - Calcula `dias_abertura_ate_status` respeitando configuração de dias úteis/corridos
 - **v3.2:** Calcula `dias_no_status` (dias entre created_at e status_fim)
 - **v3.3:** Gera status "waiting to start" dinamicamente na MV (não armazenado em USO_historicoVagas)
-- **NOVO v3.4:** Usa `USO_[vagas]` para "waiting to start" (campos `Offer_accepted_` e `Start_Date__Admission_`)
+- **v3.4:** Usa `USO_[vagas]` para "waiting to start" (campos `Offer_accepted_` e `Start_Date__Admission_`)
+- **v3.8:** Inclui campos DADOS_SELECIONADO extras de vw_vagas_nomeFixo (detecção via `grupoDoCampo` no dicionário)
+- **v3.9:** "waiting to start" genérico para schemas com `data_admissao` e `funcaoSistema='Fechada'`
 
 **Pré-requisito:**
 - Tabelas `USO_historicoVagas` e `USO_statusVagas` devem existir no schema
-- View `vw_vagas_nomeFixo` deve existir (criada por `criar_views_dashboard()`)
+- View `vw_vagas_nomeFixo` deve existir (criada por `dashboard_criar_views()`)
 - Tabela `USO_feriados` deve existir para cálculo de dias úteis
 
-**Filtros aplicados no JOIN com vagas (mesmos de criar_mv_consumo_vagas):**
+**Filtros aplicados no JOIN com vagas (mesmos de dashboard_criar_mv_consumo_vagas):**
 - `requisicao` não vazia
 - `vaga_titulo` não vazio
 - `data_abertura` válida (formato MM/DD/YYYY ou YYYY-MM-DD)
@@ -750,6 +816,12 @@ Cria a materialized view `MV_CONSUMO_historicoVagas` com todos os campos de `USO
 | `data_abertura_vaga` | DATE | Data de abertura da vaga (JOIN com `vw_vagas_nomeFixo` via `requisicao`) |
 | `dias_abertura_ate_status` | INTEGER | Dias entre `data_abertura_vaga` e `created_at` do histórico |
 | `dias_no_status` | INTEGER | Dias entre `created_at` (início do status) e `status_fim` (ou hoje se não houver próximo) |
+
+**Campos DADOS_SELECIONADO extras (v3.8):**
+- Campos de vw_vagas_nomeFixo cujo `grupoDoCampo = 'DADOS_SELECIONADO'` no USO_dicionarioVagas
+- Apenas campos que existem em vw_vagas_nomeFixo mas NÃO existem em USO_historicoVagas
+- Incluídos via LEFT JOIN com vw_vagas_nomeFixo usando requisicao como chave
+- Cielo: selecionado_empregado, selecionado_PCD, selecionado_fonte (3 campos extras)
 
 **Regras do campo `dias_abertura_ate_status`:**
 - Respeita a configuração "Tipo da contagem de dias" em `USO_configuracoesGerais`:
@@ -805,26 +877,35 @@ REFRESH MATERIALIZED VIEW "RPO_cielo"."MV_CONSUMO_historicoVagas";
 REFRESH MATERIALIZED VIEW "RPO_semper_laser"."MV_CONSUMO_historicoVagas";
 ```
 
-**Estatísticas atuais:**
-| Schema | Registros | Colunas Originais | Colunas Totais |
-|--------|-----------|-------------------|----------------|
-| RPO_cielo | 643 | 22 | 32 |
-| RPO_semper_laser | 351 | 13 | 23 |
+**Estatísticas atuais (2026-02-03):**
+| Schema | mv_CONSUMO_vagas | MV_CONSUMO_historicoVagas | MV_CONSUMO_candidatos | MV_CONSUMO_ERROS_VAGAS |
+|--------|------------------|---------------------------|-----------------------|------------------------|
+| RPO_cielo | 171 | 721 (incl. 17 waiting to start) | 1010 | 75 |
+| RPO_semper_laser | 62 | 379 | 162 | 12 |
 
-**Nota:** Em semper_laser, 42 registros são de status "waiting to start" gerados dinamicamente (não vêm de USO_historicoVagas).
+**Tabelas de histórico (2026-02-03):**
+| Schema | USO_historicoVagas | USO_historicoCandidatos |
+|--------|-------------------|------------------------|
+| RPO_cielo | ~595 registros | ~1107 registros |
+| RPO_semper_laser | 400 registros (PG = fonte da verdade) | 170 registros (importados da planilha) |
 
-### Função criar_mv_consumo_candidatos (PostgreSQL) - VERSÃO 1.0 DINÂMICA
+**Nota:** Em semper_laser, alguns registros são de status "waiting to start" gerados dinamicamente (não vêm de USO_historicoVagas). O time_to_fill usa contagem inclusiva (mesmo dia = 1).
+
+### Função dashboard_criar_mv_consumo_candidatos (PostgreSQL) - VERSÃO 2.0 COM SUPORTE A VERSÃO
+
+**Assinatura:** `public.dashboard_criar_mv_consumo_candidatos(p_schema TEXT, p_versao TEXT DEFAULT NULL)`
 
 **Uso:**
 ```sql
-SELECT criar_mv_consumo_candidatos('RPO_cielo');
-SELECT criar_mv_consumo_candidatos('RPO_semper_laser');
+SELECT dashboard_criar_mv_consumo_candidatos('RPO_cielo');
+SELECT dashboard_criar_mv_consumo_candidatos('RPO_semper_laser');
+SELECT dashboard_criar_mv_consumo_candidatos('RPO_cielo', 'V2');  -- cria V2_MV_CONSUMO_candidatos
 ```
 
 **O que faz:**
 Cria a materialized view `MV_CONSUMO_candidatos` expandindo o campo `operacao_posicoesconsideradas` em múltiplas linhas - uma para cada requisição considerada pelo candidato.
 
-**Arquivo:** `sql/funcao_criar_mv_consumo_candidatos.sql`
+**Arquivo:** `sql/dashboard_criar_mv_consumo_candidatos.sql`
 
 **Formatos suportados:**
 - **cielo**: `[REQUISICAO] - TITULO (local) --- <STATUS>` - separador: `, [`
@@ -857,6 +938,59 @@ REFRESH MATERIALIZED VIEW "RPO_semper_laser"."MV_CONSUMO_candidatos";
 |--------|--------------|-------------------|-------------------|
 | RPO_cielo | 1010 | 1006 | 42 |
 | RPO_semper_laser | 117 | 116 | 22 |
+
+### Função dashboard_criar_mv_consumo_erros_vagas (PostgreSQL) - VERSÃO 2.0 COM SUPORTE A VERSÃO
+
+**Assinatura:** `public.dashboard_criar_mv_consumo_erros_vagas(p_schema TEXT, p_versao TEXT DEFAULT NULL)`
+
+**Uso:**
+```sql
+SELECT dashboard_criar_mv_consumo_erros_vagas('RPO_cielo');
+SELECT dashboard_criar_mv_consumo_erros_vagas('RPO_semper_laser');
+SELECT dashboard_criar_mv_consumo_erros_vagas('RPO_cielo', 'V2');  -- cria V2_MV_CONSUMO_ERROS_VAGAS
+```
+
+**O que faz:**
+Cria a materialized view `MV_CONSUMO_ERROS_VAGAS` que identifica erros e inconsistências nos dados de vagas.
+
+**Arquivo:** `sql/dashboard_criar_mv_consumo_erros_vagas.sql`
+
+**Colunas:**
+| Campo | Tipo | Descrição |
+|-------|------|-----------|
+| `requisicao` | TEXT | Identificador da vaga |
+| `vaga_titulo` | TEXT | Título da vaga |
+| `recrutador` | TEXT | Recrutador responsável |
+| `erro` | TEXT | Tipo de erro encontrado |
+| `dado_erro` | TEXT | Dado que causou o erro (NULL se não aplicável) |
+
+**Erros detectados:**
+| # | Erro | Descrição |
+|---|------|-----------|
+| 1 | `data_abertura vazia` | data_abertura NULL ou vazia |
+| 1b | `data_abertura formato inválido` | Não é DD/MM/YYYY nem YYYY-MM-DD |
+| 1c | `data_abertura futura` | Data posterior a CURRENT_DATE |
+| 2a | `data_admissao futura` | data_admissao posterior a CURRENT_DATE |
+| 2b | `data_admissao anterior ao fechamento` | data_admissao antes do created_at do status Fechada |
+| 2c | `historico anterior a abertura (status)` | Registro em USO_historicoVagas com created_at antes de data_abertura |
+| 3a | `requisicao vazia` | requisicao NULL ou vazia |
+| 3b | `requisicao duplicada (N ocorrências)` | requisicao aparece mais de uma vez |
+| 4a | `sla_utilizado vazio` | sla_utilizado NULL ou vazio |
+| 4b | `sla_utilizado inconsistente` | sla_utilizado não corresponde a nenhuma coluna em USO_statusVagas |
+| 5a | `status vazio` | status NULL ou vazio |
+| 5b | `status não cadastrado` | status não presente em USO_statusVagas |
+
+**Detalhes técnicos:**
+- Busca formato de datas em USO_configuracoesGerais (brasileiro/americano)
+- Usa TO_CHAR(h.created_at, v_formato_pg) para consistência no dado_erro (ambas datas no mesmo formato)
+- Validação de SLA verifica coluna com e sem trailing `_` (ex: `Sales_Coordinator` e `Sales_Coordinator_`)
+- Exclui colunas fixas de USO_statusVagas da verificação de SLA: status, fimFluxo, sequencia, responsavel, funcaoSistema, _airbyte_*
+
+**Estatísticas atuais (2026-02-03):**
+| Schema | Total Erros |
+|--------|-------------|
+| RPO_cielo | 75 |
+| RPO_semper_laser | 12 |
 
 ### Regras de Remoção de Colunas (aplicadas pelas funções)
 
@@ -937,9 +1071,10 @@ RPO_dashboard/
 ├── config/
 │   └── dashboards.yaml                             # Configurações dos dashboards
 ├── sql/
-│   ├── funcao_criar_views_dashboard.sql            # Views dinâmicas + mv_CONSUMO_vagas
-│   ├── funcao_criar_mv_consumo_historico_vagas.sql # MV histórico (v3.0 dinâmica)
-│   └── funcao_criar_mv_consumo_candidatos.sql      # MV candidatos expandida (v1.0)
+│   ├── dashboard_criar_views.sql                    # Views dinâmicas + mv_CONSUMO_vagas (v3.0 com versão)
+│   ├── dashboard_criar_mv_consumo_historico_vagas.sql # MV histórico (v4.0 com versão)
+│   ├── dashboard_criar_mv_consumo_candidatos.sql    # MV candidatos expandida (v2.0 com versão)
+│   └── dashboard_criar_mv_consumo_erros_vagas.sql   # MV erros de vagas (v2.0 com versão)
 ├── dashboards/
 │   └── semper_laser/                               # Dashboard específico do cliente
 ├── documentacao/                                   # Docs detalhadas
@@ -1021,7 +1156,7 @@ FROM "RPO_semper_laser"."RAW_AIRBYTE_Listas";
 | `geo_location` | Cidade + Estado concatenados (ex: "South Miami - Florida (FL)") |
 
 **Como funciona:**
-- A função `criar_mv_consumo_vagas()` detecta automaticamente se existe a tabela `USO_Listas` no schema
+- A função `dashboard_criar_mv_consumo_vagas()` detecta automaticamente se existe a tabela `USO_Listas` no schema
 - Se existir, faz LEFT JOIN com `mv_CONSUMO_vagas` usando `geo_local = Lojas_`
 - Os campos geo são incluídos automaticamente na MV
 - Se a tabela não existir, a função funciona normalmente sem os campos geo
@@ -1041,18 +1176,39 @@ O cliente semper_laser possuía uma tabela de histórico original que foi usada 
 - `BACKUP_vw_historico_importado` - View de importação
 
 **Status que foram importados da tabela HISTORICO_ORIGINAL:**
-| Status | Campo de Data na Origem |
-|--------|-------------------------|
-| Open | Position_Created_Date_ADP |
-| Screening | Job_Posting_Date |
-| Interviewing | HR_Interview_Start_Date |
-| Interviewing QT | _1st_Date_Candidates_Sent_to_QT |
-| Interviewing Hiring Manager | _1st_Date_Candidates_Sent_to_Hiring_Manager |
-| Salary Approval | Salary_Approval___Email_Sent_Date |
-| BG Check | BG_Check_Sent_Date |
-| Offer | Offer_Letter_Sent_Date |
-| Cancelled – No Hire | Position_Cancellation_Date__when_applicable_ |
-| Filled | Offer_Accepted_Date |
+| Status | Campo de Data na Origem | Tabela Fonte |
+|--------|-------------------------|--------------|
+| Open | Position_Created_Date_ADP | USO_Job_Openings_Control |
+| Screening | Job_Posting_Date | HISTORICO_ORIGINAL |
+| Interviewing | HR_Interview_Start_Date | HISTORICO_ORIGINAL |
+| Interviewing QT | _1st_Date_Candidates_Sent_to_QT | HISTORICO_ORIGINAL |
+| Interviewing Hiring Manager | _1st_Date_Candidates_Sent_to_Hiring_Manager | HISTORICO_ORIGINAL |
+| Salary Approval | Salary_Approval___Email_Sent_Date | HISTORICO_ORIGINAL |
+| BG Check | BG_Check_Sent_Date | HISTORICO_ORIGINAL |
+| Offer | Offer_Letter_Sent_Date | HISTORICO_ORIGINAL |
+| Cancelled – No Hire | Position_Cancellation_Date__when_applicable_ | HISTORICO_ORIGINAL |
+| Filled | GREATEST(Offer_Accepted_Date, BG_Check_Result_Date) | HISTORICO_ORIGINAL |
+
+**Regra especial para data de Filled:**
+- A data de `created_at` do status Filled é a **maior** entre `Offer_Accepted_Date` e `BG_Check_Result_Date`
+- Se `BG_Check_Result_Date` for inválida ou vazia, usa apenas `Offer_Accepted_Date`
+- Isso garante que o Filled só ocorre após ambos os processos (aceite + resultado do BG Check)
+- Impacta diretamente a data de início do "waiting to start" (que usa `created_at` do Filled)
+
+**Campos calculados na importação (time_to_fill e time_to_start):**
+
+| Campo | Fórmula | Contagem | Aplicado a |
+|-------|---------|----------|------------|
+| `time_to_fill` | data_abertura (USO) → data Filled (HIST) | Dias úteis com feriados | Apenas status Filled |
+| `time_to_fill_no_holidays` | data_abertura (USO) → data Filled (HIST) | Dias úteis sem feriados | Apenas status Filled |
+| `time_to_start` | data_abertura (USO) → Start_Date__Admission_ (USO) | Dias úteis com feriados | Todos com Start_Date |
+| `time_to_start_no_holidays` | data_abertura (USO) → Start_Date__Admission_ (USO) | Dias úteis sem feriados | Todos com Start_Date |
+
+**IMPORTANTE - Contagem de dias INCLUSIVA:**
+- Todos os cálculos de `time_to_fill` e `time_to_start` usam contagem **inclusiva** (ambas as datas contam)
+- Exemplo: abertura em 10/01 e filled em 10/02 = **2 dias** (não 1)
+- Mesmo dia (abertura = filled) = **1 dia** (não 0)
+- Implementação: `generate_series(data_inicio, data_fim, '1 day')` sem subtrair intervalo do fim
 
 **Status especial "waiting to start":**
 | Propriedade | Valor |
@@ -1064,25 +1220,118 @@ O cliente semper_laser possuía uma tabela de histórico original que foi usada 
 
 **IMPORTANTE - "waiting to start" é gerado APENAS na MV:**
 - Este status NÃO é armazenado na tabela `USO_historicoVagas`
-- É gerado dinamicamente pela função `criar_mv_consumo_historico_vagas()` diretamente na `MV_CONSUMO_historicoVagas`
+- É gerado dinamicamente pela função `dashboard_criar_mv_consumo_historico_vagas()` diretamente na `MV_CONSUMO_historicoVagas`
 - Identificado pelo campo `alterado_por = 'gerado_mv'`
-- **v3.4**: Usa campos da tabela `USO_Job_Openings_Control` (tabela de vagas)
 
-**Regras para "waiting to start":**
-- `created_at` = campo `Offer_accepted_` da tabela `USO_Job_Openings_Control` (data de aceite da proposta)
+**Implementação semper_laser (v3.4 - campos específicos):**
+- Usa campos da tabela `USO_Job_Openings_Control` (tabela de vagas)
+- `created_at` = `created_at` do status Filled em `USO_historicoVagas` (GREATEST entre Offer_Accepted e BG_Check_Result)
 - `status_fim` = campo `Start_Date__Admission_` da tabela `USO_Job_Openings_Control` (data de admissão)
-- `dias_no_status` = dias úteis/corridos entre `created_at` e `status_fim` (não retorna 0 mesmo sendo fimFluxo = Sim)
-- Só é incluído se:
-  - A requisição existe em `mv_CONSUMO_vagas`
-  - O campo `Offer_accepted_` é válido (formato MM/DD/YYYY)
-  - O campo `Start_Date__Admission_` é válido (formato MM/DD/YYYY)
+- Só é incluído se `Offer_accepted_` e `Start_Date__Admission_` são válidos (formato MM/DD/YYYY)
 
-**Nota:** A tabela `HISTORICO_ORIGINAL_Job_Openings_Control` não é mais utilizada. Foi renomeada para `BACKUP_HISTORICO_ORIGINAL_Job_Openings_Control` junto com as views `BACKUP_vw_historico_original` e `BACKUP_vw_historico_importado`.
+**Implementação genérica/cielo (v3.9 - usando data_admissao):**
+- Ativado quando o schema tem `data_admissao` em `vw_vagas_nomeFixo` e `funcaoSistema='Fechada'` em `USO_statusVagas`
+- `created_at` = `created_at` do status com funcaoSistema='Fechada' em `USO_historicoVagas`
+- `status_fim` = `data_admissao` da `vw_vagas_nomeFixo` (convertido conforme formato configurado)
+- Só é incluído se data_admissao é válida e a requisição tem status Fechada no histórico
+- Colunas da UNION são construídas dinamicamente verificando cada coluna de USO_historicoVagas contra vw_vagas_nomeFixo
+
+**Regras comuns:**
+- `dias_no_status` = dias úteis/corridos entre `created_at` e `status_fim` (não retorna 0 mesmo sendo fimFluxo = Sim)
+- A requisição deve existir em `mv_CONSUMO_vagas`
+
+**Nota:** A tabela `HISTORICO_ORIGINAL_Job_Openings_Control` é utilizada ativamente para importação histórica. Todas as datas seguem o formato configurado em `USO_configuracoesGerais` (americano = MM/DD/YYYY para semper_laser).
+
+**IDs com sufixo alfanumérico:**
+- Alguns IDs possuem sufixo (ex: 1291A, 1291B) quando uma posição original foi dividida
+- O sistema suporta IDs alfanuméricos sem restrição
 
 **Filtros aplicados na view vw_historico_original:**
 - `ID_Position_ADP` (requisicao) não vazio
 - Campo de data no formato válido (MM/DD/YYYY) - usa regex `^\d{1,2}/\d{1,2}/\d{4}$`
 - Registros com datas inválidas (texto, NULL, vazio) são ignorados
+
+<!-- CHAPTER: 6.7 V2 Dashboard Versioning -->
+
+## V2 Dashboard Versioning
+
+### Conceito
+
+A V2 é uma versão paralela do dashboard que permite trabalhar com dados atualizados (fontes RAW_AIRBYTE_) sem alterar o dashboard V1 em produção. Todos os objetos V2 usam o prefixo `V2_`.
+
+**Status atual:** Implementado apenas para RPO_cielo.
+
+### Convenção de Nomenclatura
+
+- **Prefixo `V2_`** em TODOS os objetos da versão 2 (tabelas, views, materialized views)
+- Exemplos: `V2_USO_vagas`, `V2_vw_vagas_nomeFixo`, `V2_mv_CONSUMO_vagas`
+- **NÃO usar sufixo** `_V2` (regra alterada durante implementação)
+
+### Regras de Criação de Tabelas V2_USO_
+
+As tabelas V2_USO_ são cópias das tabelas de origem, mas com fontes específicas:
+
+| Tabela V2 | Fonte | Motivo |
+|-----------|-------|--------|
+| `V2_USO_vagas` | `RAW_AIRBYTE_vagas` | Dados atualizados do Airbyte |
+| `V2_USO_candidatos` | `RAW_AIRBYTE_candidatos` | Dados atualizados do Airbyte |
+| `V2_USO_statusVagas` | `RAW_AIRBYTE_statusVagas` | Dados atualizados do Airbyte |
+| `V2_USO_statusCandidatos` | `RAW_AIRBYTE_statusCandidatos` | Dados atualizados do Airbyte |
+| `V2_USO_configuracoesGerais` | `RAW_AIRBYTE_configuracoesGerais` | Dados atualizados do Airbyte |
+| `V2_USO_feriados` | `RAW_AIRBYTE_feriados` | Dados atualizados do Airbyte |
+| `V2_USO_dicionarioVagas` | `RAW_dicionarioVagas` | Não existe versão RAW_AIRBYTE_ |
+| `V2_USO_dicionarioCandidatos` | `RAW_dicionarioCandidatos` | Não existe versão RAW_AIRBYTE_ |
+| `V2_USO_historicoVagas` | `USO_historicoVagas` | Não existe fonte RAW (dados gerados pela API) |
+| `V2_USO_historicoCandidatos` | `USO_historicoCandidatos` | Não existe fonte RAW (dados gerados pela API) |
+
+### Regras de Fonte (CRÍTICO)
+
+1. **RAW_AIRBYTE_*** - Fonte padrão para maioria das tabelas (vagas, candidatos, statusVagas, statusCandidatos, configuracoesGerais, feriados)
+2. **RAW_*** (sem AIRBYTE) - Apenas para dicionários (dicionarioVagas, dicionarioCandidatos), pois não existe versão RAW_AIRBYTE_
+3. **USO_*** - Exceção para históricos (historicoVagas, historicoCandidatos), pois não existe fonte RAW/RAW_AIRBYTE_
+4. **PROIBIDO**: NÃO usar `RAW_statusVagas` nem `RAW_statusCandidatos` (sem prefixo AIRBYTE) como fonte. Usar SEMPRE `RAW_AIRBYTE_statusVagas` e `RAW_AIRBYTE_statusCandidatos`
+
+### Criação das Tabelas V2
+
+```sql
+-- ============================================================
+-- V2: CRIAÇÃO DE TABELAS (RPO_cielo)
+-- ============================================================
+
+-- Fonte: RAW_AIRBYTE_*
+CREATE TABLE "RPO_cielo"."V2_USO_vagas" AS SELECT * FROM "RPO_cielo"."RAW_AIRBYTE_vagas";
+CREATE TABLE "RPO_cielo"."V2_USO_candidatos" AS SELECT * FROM "RPO_cielo"."RAW_AIRBYTE_candidatos";
+CREATE TABLE "RPO_cielo"."V2_USO_statusVagas" AS SELECT * FROM "RPO_cielo"."RAW_AIRBYTE_statusVagas";
+CREATE TABLE "RPO_cielo"."V2_USO_statusCandidatos" AS SELECT * FROM "RPO_cielo"."RAW_AIRBYTE_statusCandidatos";
+CREATE TABLE "RPO_cielo"."V2_USO_configuracoesGerais" AS SELECT * FROM "RPO_cielo"."RAW_AIRBYTE_configuracoesGerais";
+CREATE TABLE "RPO_cielo"."V2_USO_feriados" AS SELECT * FROM "RPO_cielo"."RAW_AIRBYTE_feriados";
+
+-- Fonte: RAW_* (sem AIRBYTE - não existe versão AIRBYTE para dicionários)
+CREATE TABLE "RPO_cielo"."V2_USO_dicionarioVagas" AS SELECT * FROM "RPO_cielo"."RAW_dicionarioVagas";
+CREATE TABLE "RPO_cielo"."V2_USO_dicionarioCandidatos" AS SELECT * FROM "RPO_cielo"."RAW_dicionarioCandidatos";
+
+-- Fonte: USO_* (exceção - não existe fonte RAW para históricos)
+CREATE TABLE "RPO_cielo"."V2_USO_historicoVagas" AS SELECT * FROM "RPO_cielo"."USO_historicoVagas";
+CREATE TABLE "RPO_cielo"."V2_USO_historicoCandidatos" AS SELECT * FROM "RPO_cielo"."USO_historicoCandidatos";
+
+-- Permissões
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "RPO_cielo" TO rpo_user;
+```
+
+### Criar Views e MVs V2
+
+As funções agora suportam o parâmetro `p_versao`. Para criar os objetos V2:
+
+```sql
+-- Criar views e MVs V2 (usar após criar tabelas V2_USO_)
+SELECT dashboard_criar_views('RPO_cielo', 'V2');
+SELECT dashboard_criar_mv_consumo_vagas('RPO_cielo', 'V2');
+SELECT dashboard_criar_mv_consumo_historico_vagas('RPO_cielo', 'V2');
+SELECT dashboard_criar_mv_consumo_candidatos('RPO_cielo', 'V2');
+SELECT dashboard_criar_mv_consumo_erros_vagas('RPO_cielo', 'V2');
+```
+
+Objetos criados: `V2_vw_vagas_nomeFixo`, `V2_vw_candidatos_nomeFixo`, `V2_mv_SLAs`, `V2_mv_CONSUMO_vagas`, `V2_MV_CONSUMO_historicoVagas`, `V2_MV_CONSUMO_candidatos`, `V2_MV_CONSUMO_ERROS_VAGAS`
 
 <!-- CHAPTER: 7 Troubleshooting -->
 
@@ -1125,41 +1374,239 @@ FROM "RPO_cliente"."USO_statusVagas";
    ```
 
 **Arquivos alterados:**
-- `sql/funcao_criar_views_dashboard.sql` - TRIM em todos os JOINs com status/requisicao
-- `sql/funcao_criar_mv_consumo_historico_vagas.sql` - TRIM em todos os JOINs com status/requisicao
+- `sql/dashboard_criar_views.sql` - TRIM em todos os JOINs com status/requisicao
+- `sql/dashboard_criar_mv_consumo_historico_vagas.sql` - TRIM em todos os JOINs com status/requisicao
 
 **Prevenção:** Ao importar dados do Airbyte, verificar se há espaços no final dos campos de chave (status, requisicao)
 
 ### Bug: Erro de formato de data em USO_feriados (Corrigido em 2026-02-02)
 
-**Problema:** A função `criar_mv_consumo_vagas()` falha com erro de formato de data inválido ao calcular dias úteis.
+**Problema:** A função `dashboard_criar_mv_consumo_vagas()` falhava com erro de formato de data ao calcular dias úteis.
 
-**Mensagem de erro:**
-```
-ERROR: date/time field value out of range: "02/13/2024"
-DETAIL: Perhaps you need a different "datestyle" setting.
-```
+**Causa raiz:** A função usava formato hardcoded `DD/MM/YYYY` para feriados.
 
-**Causa raiz:** A tabela `USO_feriados` continha datas em formato americano (MM/DD/YYYY), mas a função `criar_mv_consumo_vagas()` usa `TO_DATE(..., 'DD/MM/YYYY')` para parsing das datas de feriados.
+**Solução aplicada:** A função `dashboard_criar_mv_consumo_vagas()` agora usa `v_formato_pg` (formato configurado) para parsing de feriados. Não é mais necessário converter o formato dos feriados manualmente.
+
+### Bug: Permissões insuficientes para rpo_user (Corrigido em 2026-02-02)
+
+**Problema:** O usuário `rpo_user` (usado pela API do RPO-V4) não conseguia acessar tabelas e views criadas no PostgreSQL. Erros como "permissão negada para tabela" ou "relação não existe" ocorriam ao tentar SELECT.
+
+**Causa raiz:** As tabelas USO_ e views/MVs eram criadas pelo usuário `cazouvilela`, mas sem GRANT explícito para `rpo_user`. Quando a API tentava acessar usando `rpo_user`, recebia erro de permissão.
 
 **Diagnóstico:**
 ```sql
--- Verificar se há datas em formato MM/DD/YYYY (dia > 12 indica formato americano)
-SELECT "Data",
-       SUBSTRING("Data", 1, 2) as primeiro_campo
-FROM "RPO_cliente"."USO_feriados"
-WHERE SUBSTRING("Data", 1, 2)::INTEGER > 12;
+-- Verificar owner e permissões de uma tabela
+SELECT
+    schemaname, tablename, tableowner,
+    has_table_privilege('rpo_user', schemaname || '.' || tablename, 'SELECT') as pode_select
+FROM pg_tables
+WHERE schemaname = 'RPO_cliente';
+
+-- Verificar se tabela existe mas rpo_user não vê no information_schema
+-- (information_schema só mostra objetos que o usuário tem permissão de ver)
+SELECT * FROM pg_class WHERE relname = 'USO_historicoVagas';  -- admin vê
+SELECT * FROM information_schema.tables WHERE table_name = 'USO_historicoVagas';  -- rpo_user não vê
 ```
 
-**Solução aplicada:**
+**Soluções aplicadas:**
+
+1. **Funções SQL atualizadas:** Todas as funções de criação de views/MVs agora incluem GRANT automaticamente:
+   ```sql
+   -- Todas as funções dashboard_criar_* incluem GRANT automaticamente
+   -- Objetos versionados (V2_*) também recebem GRANT
+   EXECUTE format('GRANT SELECT ON %I.%I TO rpo_user', p_schema, v_out_vw_vagas);
+   EXECUTE format('GRANT SELECT ON %I.%I TO rpo_user', p_schema, v_out_mv_slas);
+   -- etc. para cada objeto criado
+   ```
+
+2. **ETAPA 1.14 adicionada:** Comandos de GRANT para tabelas USO_ devem ser executados após criação.
+
+**Para corrigir manualmente em schemas existentes:**
 ```sql
--- Converter datas de MM/DD/YYYY para DD/MM/YYYY
-UPDATE "RPO_cliente"."USO_feriados"
-SET "Data" = TO_CHAR(TO_DATE("Data", 'MM/DD/YYYY'), 'DD/MM/YYYY')
-WHERE "Data" ~ '^\d{2}/\d{2}/\d{4}$';
+-- Conceder permissões em todas as tabelas existentes
+GRANT USAGE ON SCHEMA "RPO_cliente" TO rpo_user;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "RPO_cliente" TO rpo_user;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA "RPO_cliente" TO rpo_user;
+
+-- Configurar permissões padrão para novos objetos
+ALTER DEFAULT PRIVILEGES IN SCHEMA "RPO_cliente" GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO rpo_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA "RPO_cliente" GRANT USAGE, SELECT ON SEQUENCES TO rpo_user;
 ```
 
-**Prevenção:** Na ETAPA 1 do processo de criação do dashboard, após criar `USO_feriados`, verificar e converter o formato de datas se necessário.
+**Prevenção:** Sempre executar ETAPA 1.14 (GRANT) após criar tabelas USO_. As funções de criação de views/MVs agora concedem permissões automaticamente.
+
+### Achado: Dados de origem com Position_Created = Offer_Accepted (semper_laser, 2026-02-02)
+
+**Problema identificado:** A média de time-to-fill (dias da abertura até Filled) parecia muito baixa (~8 dias). Investigação revelou problema de qualidade nos dados de origem.
+
+**Análise da tabela HISTORICO_ORIGINAL_Job_Openings_Control:**
+```sql
+-- Estatísticas de time-to-fill
+SELECT
+    COUNT(*) FILTER (WHERE TO_DATE("Position_Created_Date_ADP", 'MM/DD/YYYY') =
+                          TO_DATE("Offer_Accepted_Date", 'MM/DD/YYYY')) AS same_day,
+    COUNT(*) FILTER (WHERE TO_DATE("Offer_Accepted_Date", 'MM/DD/YYYY') -
+                          TO_DATE("Position_Created_Date_ADP", 'MM/DD/YYYY') <= 7) AS under_7_days,
+    COUNT(*) AS total_filled
+FROM "RPO_semper_laser"."HISTORICO_ORIGINAL_Job_Openings_Control"
+WHERE "Offer_Accepted_Date" ~ '^\d{1,2}/\d{1,2}/\d{4}$';
+```
+
+**Resultados (2026-02-02):**
+| Métrica | Valor | % |
+|---------|-------|---|
+| Vagas filled total | 64 | 100% |
+| Same day (0 dias) | 22 | 34% |
+| Até 7 dias | 37 | 58% |
+
+**Causa provável:**
+1. Dados retroativos - vagas já estavam preenchidas quando foram cadastradas no sistema
+2. Problema no import/sync da planilha original
+3. Preenchimento manual incorreto das datas
+
+**Impacto:**
+- mv_CONSUMO_vagas mostra `dias_da_abertura = 0` para 18 posições Filled
+- Média de time-to-fill ficou em **16.60 dias** (não 8.12 como reportado anteriormente)
+- Distorção nas métricas de eficiência do recrutamento
+
+**Exemplos de registros problemáticos:**
+| requisicao | Position_Title | Position_Created | Offer_Accepted |
+|------------|---------------|------------------|----------------|
+| 1244 | Sales Coordinator | 08/01/2025 | 8/1/2025 |
+| 1259 | Sales Coordinator | 08/14/2025 | 8/14/2025 |
+| 1268 | Sales Coordinator | 11/19/2025 | 11/19/2025 |
+
+**Não é erro de import:** A verificação mostrou que as datas estão sendo importadas e convertidas corretamente. O problema está nos dados de origem da planilha.
+
+**Recomendação:** Reportar ao cliente para revisão das datas na planilha original. Com contagem inclusiva, mesmo-dia = 1 dia (não mais 0).
+
+### Achado: 19 IDs em HISTORICO_ORIGINAL sem correspondência em USO/RAW (semper_laser, 2026-02-03)
+
+**Problema identificado:** 19 IDs presentes em `HISTORICO_ORIGINAL_Job_Openings_Control` não aparecem na `MV_CONSUMO_historicoVagas`.
+
+**Causa:**
+- 18 IDs não existem em `USO_Job_Openings_Control` nem em `RAW_AIRBYTE_Job_Openings_Control` (posições removidas da planilha ativa)
+- 1 ID (1277) existe na USO mas com `data_abertura` futura (10/03/2026), excluído pelo filtro
+
+**IDs ausentes:** 1219, 1232, 1238, 1244, 1245, 1246, 1247, 1248, 1249, 1250, 1251, 1252, 1253, 1255, 1259, 1263, 1266, 1277, 1286
+
+**Impacto:** Esses registros históricos não são processados. Para incluí-los, as posições precisam ser adicionadas na planilha ativa (RAW).
+
+### Bug: Corrupção de dados históricos - datas futuras e IDs desalinhados (Corrigido em 2026-02-03)
+
+**Problema:** Datas futuras aparecendo nas planilhas de historicoCandidatos e historicoVagas (Cielo e Semper Laser). Exemplo: datas como 03/10/2026 quando deveria ser 10/03/2026.
+
+**Causa raiz (3 fatores encadeados):**
+
+1. **Script de importação `carregar_historico_planilha.py`** tinha parsing de datas com formato americano (MM/DD/YYYY) antes do brasileiro (DD/MM/YYYY). Para datas ambíguas (dia <= 12), o parser americano acertava primeiro e invertia mês/dia, gerando datas futuras.
+
+2. **O mesmo script** excluía a coluna `id` no INSERT (linha 370: `col != 'id'`), fazendo o PostgreSQL auto-gerar IDs via SERIAL. Resultado: IDs no PG (ex: 74-668 para Cielo) não correspondiam aos IDs da planilha (1-507).
+
+3. **O worker `worker_sheets_sync.js`** procurava o ID do PG na coluna A da planilha. Com IDs desalinhados, encontrava a linha errada e sobrescrevia dados de outros registros. 51 vagas e 315 candidatos corrompidos em Cielo.
+
+**Correções aplicadas:**
+
+**Cielo:**
+- Restaurados 51 registros de vagas da aba "Cópia de historicoVagas" (fonte da verdade)
+- Restaurados 315 registros de candidatos da aba "Cópia de historicoCandidatos"
+- Atualizadas datas no PG usando Cópia como referência (107 vagas, 76 candidatos)
+- IDs na planilha realinhados com IDs do PG (595 vagas, 45 candidatos)
+- Resultado: 0 datas futuras em vagas e candidatos
+
+**Semper Laser:**
+- **Vagas**: PG é fonte da verdade (editado diretamente durante criação do dashboard). Planilha limpa e recarregada com 400 registros do PG.
+- **Candidatos**: Restaurados 35 registros corrompidos da aba "Cópia de historicoCandidatos"
+- Resultado: 0 datas futuras (exceto 1 registro PG ID 16 com data_abertura futura 10/03/2026 - dado de origem incorreto)
+
+**Script corrigido** (`carregar_historico_planilha.py` linha 125-131):
+```python
+# Ordem corrigida: brasileiro ANTES de americano
+formatos = [
+    '%d/%m/%Y %H:%M:%S',  # Brasileiro (prioridade)
+    '%Y-%m-%d %H:%M:%S',  # ISO
+    '%Y-%m-%dT%H:%M:%S',  # ISO com T
+    '%d/%m/%Y',            # Brasileiro sem hora
+    '%Y-%m-%d',            # ISO sem hora
+]
+```
+
+**IMPORTANTE - Abas de cópia nas planilhas:**
+- "Cópia de historicoVagas" e "Cópia de historicoCandidatos" contêm dados corretos pré-corrupção
+- Servem como backup/referência. NÃO excluir estas abas.
+
+### Bug: Worker com formato de data hardcoded (Corrigido em 2026-02-03)
+
+**Problema:** O worker `worker_sheets_sync.js` usava `formatDateBR()` hardcoded para DD/MM/YYYY, ignorando a configuração "Formato das datas" em `configuracoesGerais`. Semper Laser usa formato americano (MM/DD/YYYY) mas recebia datas em formato brasileiro.
+
+**Correções no worker (`/home/cazouvilela/projetos/RPO-V4/api_historico/worker_sheets_sync.js`):**
+
+1. **`getDateFormat(spreadsheetId)`** - Lê "Formato das datas" da aba `configuracoesGerais`, cache de 10 minutos, default `brasileiro`
+2. **`formatDate(date, formato)`** - Substitui `formatDateBR()`. Suporta `brasileiro` (DD/MM/YYYY) e `americano` (MM/DD/YYYY)
+3. **`syncSchema()`** (vagas) - Busca `dateFormat` e passa para `convertRowToSheetFormat()` e `upsertRowInSheet()`
+4. **`syncSchemaCandidatos()`** - Busca `dateFormat` e passa para `convertRowToSheetFormatCandidatos()`
+
+**Fluxo de datas verificado end-to-end:**
+- **Apps Script** -> API: NÃO envia datas, apenas dados de negócio
+- **API** -> PostgreSQL: Usa `NOW()` para `created_at`/`updated_at` (sempre correto)
+- **Worker** -> Planilha: Lê timestamp do PG e formata conforme `configuracoesGerais`
+
+### Fix: Worker quota protection (Implementado em 2026-02-03)
+
+**Problema:** Worker consumia toda a quota do Google Sheets API (642.510 requisições, 96% com erro 429).
+
+**Correções no worker:**
+- `SYNC_INTERVAL_MS`: 30s -> 60s
+- `MAX_ROWS_PER_CYCLE`: 10 linhas por schema por ciclo
+- `THROTTLE_BETWEEN_SCHEMAS_MS`: 5s entre schemas
+- `headersCache`: Cache de headers com TTL 5 min
+- `withQuotaRetry()`: Exponential backoff para erros 429
+- Sleep entre linhas: 1s -> 1.5s
+
+### Fix: Tabela semper_laser candidatos normalizada (Corrigido em 2026-02-03)
+
+**Problema:** `RPO_semper_laser.USO_historicoCandidatos` tinha estrutura Airbyte (colunas como `Candidate_ID`, `Ultima_atualizacao`, `id_do_historico`) em vez da estrutura normalizada usada pelo worker (que espera `id`, `updated_at`, `id_candidato`). Worker falhava com `coluna "updated_at" não existe`.
+
+**Causa:** Tabela foi originalmente importada via Airbyte com nomenclatura diferente.
+
+**Correção:**
+1. Tabela estava vazia, então foi dropada e recriada com mesma estrutura de `RPO_cielo.USO_historicoCandidatos`:
+   ```sql
+   CREATE TABLE "RPO_semper_laser"."USO_historicoCandidatos" (
+       id SERIAL PRIMARY KEY,
+       id_candidato VARCHAR NOT NULL,
+       status_candidato VARCHAR,
+       status_micro_candidato VARCHAR,
+       alterado_por VARCHAR,
+       created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+       updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+       nome_candidato TEXT,
+       contatos_candidato TEXT,
+       localidade_candidato TEXT,
+       telefone_candidato TEXT,
+       vaga_salario TEXT,
+       candidato_origem TEXT
+   );
+   ```
+2. Dados importados da planilha historicoCandidatos (170 registros, IDs preservados da coluna A)
+3. Sequence ajustada para max(id) = 171
+4. 0 datas futuras após importação
+
+**Worker status após correções (2026-02-03):**
+Todos os 4 schemas rodando sem erros:
+| Schema | Vagas | Candidatos |
+|--------|-------|------------|
+| RPO_template3 | OK | OK |
+| RPO_cielo_dev | OK | OK |
+| RPO_semper_laser | OK | OK |
+| RPO_cielo | OK | OK |
+
+**Serviço systemd:** `rpo-worker-sheets.service` (restart via `systemctl restart rpo-worker-sheets.service`)
+
+### Nota: schemas.json - RPO_cielo e RPO_cielo_dev apontam para a mesma planilha
+
+**Arquivo:** `/home/cazouvilela/projetos/RPO-V4/api_historico/schemas.json`
+
+Ambos `RPO_cielo` e `RPO_cielo_dev` usam o mesmo `spreadsheetId`: `1swF0vtbgftzFIKXFnUAf3Osn9tkR3XB1J-Y3zxrhTN0`. O worker sincroniza ambos os schemas para a mesma planilha.
 
 <!-- CHAPTER: 8 Próximas Features -->
 
@@ -1169,6 +1616,9 @@ WHERE "Data" ~ '^\d{2}/\d{2}/\d{4}$';
 - [x] Dashboard semper_laser (views e MVs criadas)
 - [x] Dashboard cielo (views e MVs criadas)
 - [x] MV_CONSUMO_historicoVagas (implementada nos 2 schemas)
+- [x] MV_CONSUMO_ERROS_VAGAS (implementada nos 2 schemas)
+- [x] V2 Dashboard - tabelas V2_USO_ criadas para cielo
+- [x] V2 Dashboard - funções refatoradas com suporte a p_versao (dashboard_criar_*)
 - [ ] Sistema de seleção de cliente ao iniciar
 - [ ] Interface Streamlit para visualização
 
@@ -1181,6 +1631,6 @@ WHERE "Data" ~ '^\d{2}/\d{2}/\d{4}$';
 
 ---
 
-**Última Atualização**: 2026-02-02
-**Versão**: 0.9.9
-**Status**: Em desenvolvimento
+**Última Atualização**: 2026-02-03
+**Versão**: 2.1.0
+**Status**: Em produção (ambos dashboards funcionando, worker com formato de data configurável)
