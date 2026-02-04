@@ -67,6 +67,14 @@ DECLARE
     v_status_fechada TEXT := NULL;
     v_colunas_union_generic TEXT := '';
     v_col_in_view BOOLEAN;
+    -- time_to_* fields
+    v_time_to_sql TEXT := '';
+    v_has_admissao_in_view BOOLEAN := FALSE;
+    v_has_form_in_view BOOLEAN := FALSE;
+    v_filled_sub TEXT;
+    v_admissao_sub TEXT;
+    v_form_sub TEXT;
+    v_holidays_sub TEXT;
 BEGIN
     -- ============================================================
     -- Logica de prefixo
@@ -451,6 +459,113 @@ BEGIN
     END IF;
 
     -- ============================================================
+    -- time_to_* fields
+    -- ============================================================
+    SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = p_schema AND table_name = v_out_vw_vagas AND column_name = 'data_admissao'
+    ) INTO v_has_admissao_in_view;
+
+    SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = p_schema AND table_name = v_out_vw_vagas AND column_name = 'vaga_data_form'
+    ) INTO v_has_form_in_view;
+
+    -- Subquery: filled date (data do ultimo status com funcaoSistema = Fechada)
+    v_filled_sub := format(
+        '(SELECT MAX(h_f.created_at)::DATE FROM historico_base h_f LEFT JOIN %I.%I sv_f ON TRIM(sv_f.status) = TRIM(h_f.status) WHERE TRIM(h_f.requisicao) = TRIM(hcs.requisicao) AND sv_f."funcaoSistema" = ''Fechada'')',
+        p_schema, v_tbl_statusVagas
+    );
+
+    -- Subquery: holidays check
+    v_holidays_sub := format(
+        'NOT EXISTS (SELECT 1 FROM %I.%I f WHERE TO_DATE(f."Data", %L) = d.dt::DATE)',
+        p_schema, v_tbl_feriados, v_formato_pg
+    );
+
+    -- Subquery: admissao date (parsed)
+    IF v_has_admissao_in_view THEN
+        v_admissao_sub := format(
+            '(SELECT CASE WHEN vw_a.data_admissao ~ ''^\d{1,2}/\d{1,2}/\d{4}$'' THEN TO_DATE(vw_a.data_admissao, %L) WHEN vw_a.data_admissao ~ ''^\d{4}-\d{2}-\d{2}$'' THEN TO_DATE(vw_a.data_admissao, ''YYYY-MM-DD'') ELSE NULL END FROM %I.%I vw_a WHERE TRIM(vw_a.requisicao) = TRIM(hcs.requisicao) LIMIT 1)',
+            v_formato_pg, p_schema, v_out_vw_vagas
+        );
+    ELSE
+        v_admissao_sub := 'NULL::DATE';
+    END IF;
+
+    -- Subquery: form date (parsed)
+    IF v_has_form_in_view THEN
+        v_form_sub := format(
+            '(SELECT CASE WHEN vw_f.vaga_data_form ~ ''^\d{1,2}/\d{1,2}/\d{4}$'' THEN TO_DATE(vw_f.vaga_data_form, %L) WHEN vw_f.vaga_data_form ~ ''^\d{4}-\d{2}-\d{2}$'' THEN TO_DATE(vw_f.vaga_data_form, ''YYYY-MM-DD'') ELSE NULL END FROM %I.%I vw_f WHERE TRIM(vw_f.requisicao) = TRIM(hcs.requisicao) LIMIT 1)',
+            v_formato_pg, p_schema, v_out_vw_vagas
+        );
+    ELSE
+        v_form_sub := 'NULL::DATE';
+    END IF;
+
+    -- Montar os 6 campos time_to_*
+    -- time_to_fill* so preenchido para status com funcaoSistema = 'Fechada'
+    v_time_to_sql :=
+        -- 1. time_to_fill (dias corridos: abertura -> filled)
+        ',
+            CASE
+                WHEN hcs.funcao_sistema = ''Fechada'' AND hcs.data_abertura_vaga IS NOT NULL
+                THEN (' || v_filled_sub || ' - hcs.data_abertura_vaga)::INTEGER
+                ELSE NULL
+            END AS time_to_fill' ||
+        -- 2. time_to_start (dias corridos: abertura -> admissao)
+        ',
+            CASE
+                WHEN hcs.data_abertura_vaga IS NULL THEN NULL
+                WHEN ' || v_admissao_sub || ' IS NULL THEN NULL
+                ELSE (' || v_admissao_sub || ' - hcs.data_abertura_vaga)::INTEGER
+            END AS time_to_start' ||
+        -- 3. time_to_fill_no_holidays (dias uteis: abertura -> filled)
+        ',
+            CASE
+                WHEN hcs.funcao_sistema = ''Fechada'' AND hcs.data_abertura_vaga IS NOT NULL AND ' || v_filled_sub || ' IS NOT NULL
+                THEN (
+                    SELECT COUNT(*)::INTEGER FROM generate_series(
+                        hcs.data_abertura_vaga,
+                        ' || v_filled_sub || ' - INTERVAL ''1 day'',
+                        ''1 day''::INTERVAL
+                    ) AS d(dt)
+                    WHERE EXTRACT(DOW FROM d.dt) NOT IN (0, 6)
+                      AND ' || v_holidays_sub || '
+                )
+                ELSE NULL
+            END AS time_to_fill_no_holidays' ||
+        -- 4. time_to_start_no_holidays (dias uteis: abertura -> admissao)
+        ',
+            CASE
+                WHEN hcs.data_abertura_vaga IS NULL THEN NULL
+                WHEN ' || v_admissao_sub || ' IS NULL THEN NULL
+                ELSE (
+                    SELECT COUNT(*)::INTEGER FROM generate_series(
+                        hcs.data_abertura_vaga,
+                        ' || v_admissao_sub || ' - INTERVAL ''1 day'',
+                        ''1 day''::INTERVAL
+                    ) AS d(dt)
+                    WHERE EXTRACT(DOW FROM d.dt) NOT IN (0, 6)
+                      AND ' || v_holidays_sub || '
+                )
+            END AS time_to_start_no_holidays' ||
+        -- 5. time_to_fill_forms (dias corridos: form_date -> filled)
+        ',
+            CASE
+                WHEN hcs.funcao_sistema = ''Fechada'' AND ' || v_form_sub || ' IS NOT NULL AND ' || v_filled_sub || ' IS NOT NULL
+                THEN (' || v_filled_sub || ' - ' || v_form_sub || ')::INTEGER
+                ELSE NULL
+            END AS time_to_fill_forms' ||
+        -- 6. time_to_start_forms (dias corridos: form_date -> admissao)
+        ',
+            CASE
+                WHEN ' || v_form_sub || ' IS NULL THEN NULL
+                WHEN ' || v_admissao_sub || ' IS NULL THEN NULL
+                ELSE (' || v_admissao_sub || ' - ' || v_form_sub || ')::INTEGER
+            END AS time_to_start_forms';
+
+    -- ============================================================
     -- Construir SQL principal
     -- ============================================================
     v_sql := format('
@@ -628,7 +743,7 @@ BEGIN
        v_tipo_contagem, p_schema, v_tbl_feriados, v_formato_pg, -- 33-36: dias_abertura_ate_status
        v_tipo_contagem, p_schema, v_tbl_feriados, v_formato_pg, -- 37-40: dias_no_status
        p_schema, v_tbl_statusVagas,                            -- 41-42: ultimo_filled
-       v_dias_ate_inicio_sql);                                 -- 43: dias_ate_inicio
+       v_dias_ate_inicio_sql || v_time_to_sql);                -- 43: dias_ate_inicio + time_to_*
 
     EXECUTE v_sql;
 

@@ -677,6 +677,11 @@ BEGIN
     p_schema, v_tbl_historicoVagas,                            -- LATERAL hist_fim
     p_schema, v_tbl_historicoVagas);                           -- LATERAL hist_fim (subquery)
 
+    -- V1: remover prefixo calc_ dos campos calculados
+    IF v_prefixo = '' THEN
+        v_sql := REPLACE(v_sql, 'calc_', '');
+    END IF;
+
     EXECUTE v_sql;
 
     -- Contar registros
