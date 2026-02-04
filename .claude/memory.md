@@ -77,6 +77,15 @@ Cada dashboard possui os seguintes parâmetros:
 
 **Tabelas fixas:** USO_statusVagas, USO_statusCandidatos, USO_dicionarioVagas, USO_dicionarioCandidatos, USO_feriados, USO_historicoVagas, USO_historicoCandidatos, USO_FALLBACK_historicoVagas, USO_FALLBACK_historicoCandidatos
 
+**Tabela historico_log_vagas (extraída de Google Sheets version history):**
+- 334 status changes tracked (Jan 2 - Feb 4, 2025)
+- 84 unique RPs with recorded changes
+- 9 unique editors: Jessica, Emily, Carolina, Gessica, Ariane, Liliane, Cazou, Taina, Gabrielle
+- Colunas: id, rp, old_status, new_status, change_datetime, changed_by, revision_id, prev_revision_id
+- Extraída via CDP (Chrome DevTools Protocol) do histórico de versões do Google Sheets
+- Scripts em `/home/cazouvilela/projetos/RPO-V4/api_historico/`: cdp_map_rev_ids.js, extract_status_changes.py
+- A coluna "Log de atividades" (AQ) da planilha foi rejeitada como não confiável pelo usuário
+
 **Tipo contagem:** Dias úteis
 **Formato datas:** brasileiro (DD/MM/YYYY)
 

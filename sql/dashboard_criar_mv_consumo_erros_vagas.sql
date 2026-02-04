@@ -80,7 +80,7 @@ BEGIN
     v_resultado := v_resultado || 'Status fechada: ' || COALESCE(v_status_fechada, 'nao encontrado') || E'\n';
 
     v_sql := format('
-        DROP MATERIALIZED VIEW IF EXISTS %I.%I;
+        DROP MATERIALIZED VIEW IF EXISTS %I.%I CASCADE;
 
         CREATE MATERIALIZED VIEW %I.%I AS
 
@@ -89,7 +89,7 @@ BEGIN
         -- ============================================================
         SELECT
             v.requisicao,
-            v.vaga_titulo,
+            UPPER(LEFT(TRIM(v.vaga_titulo), 1)) || LOWER(SUBSTRING(TRIM(v.vaga_titulo) FROM 2)) AS vaga_titulo,
             v.operacao_recrutador AS recrutador,
             ''data_abertura vazia'' AS erro,
             NULL::TEXT AS dado_erro
@@ -103,7 +103,7 @@ BEGIN
         -- ============================================================
         SELECT
             v.requisicao,
-            v.vaga_titulo,
+            UPPER(LEFT(TRIM(v.vaga_titulo), 1)) || LOWER(SUBSTRING(TRIM(v.vaga_titulo) FROM 2)) AS vaga_titulo,
             v.operacao_recrutador AS recrutador,
             ''data_abertura formato invalido'' AS erro,
             v.data_abertura AS dado_erro
@@ -120,7 +120,7 @@ BEGIN
         -- ============================================================
         SELECT
             v.requisicao,
-            v.vaga_titulo,
+            UPPER(LEFT(TRIM(v.vaga_titulo), 1)) || LOWER(SUBSTRING(TRIM(v.vaga_titulo) FROM 2)) AS vaga_titulo,
             v.operacao_recrutador AS recrutador,
             ''data_abertura futura'' AS erro,
             v.data_abertura AS dado_erro
@@ -140,7 +140,7 @@ BEGIN
         -- ============================================================
         SELECT
             v.requisicao,
-            v.vaga_titulo,
+            UPPER(LEFT(TRIM(v.vaga_titulo), 1)) || LOWER(SUBSTRING(TRIM(v.vaga_titulo) FROM 2)) AS vaga_titulo,
             v.operacao_recrutador AS recrutador,
             ''data_admissao futura'' AS erro,
             v.data_admissao AS dado_erro
@@ -160,7 +160,7 @@ BEGIN
         -- ============================================================
         SELECT
             v.requisicao,
-            v.vaga_titulo,
+            UPPER(LEFT(TRIM(v.vaga_titulo), 1)) || LOWER(SUBSTRING(TRIM(v.vaga_titulo) FROM 2)) AS vaga_titulo,
             v.operacao_recrutador AS recrutador,
             ''data_admissao anterior ao fechamento'' AS erro,
             ''admissao: '' || v.data_admissao || '' | fechamento: '' || TO_CHAR(h.created_at, %L) AS dado_erro
@@ -186,7 +186,7 @@ BEGIN
         -- ============================================================
         SELECT
             v.requisicao,
-            v.vaga_titulo,
+            UPPER(LEFT(TRIM(v.vaga_titulo), 1)) || LOWER(SUBSTRING(TRIM(v.vaga_titulo) FROM 2)) AS vaga_titulo,
             v.operacao_recrutador AS recrutador,
             ''historico anterior a abertura ('' || h.status || '')'' AS erro,
             ''status: '' || TO_CHAR(h.created_at, %L) || '' | abertura: '' || v.data_abertura AS dado_erro
@@ -211,7 +211,7 @@ BEGIN
         -- ============================================================
         SELECT
             v.requisicao,
-            v.vaga_titulo,
+            UPPER(LEFT(TRIM(v.vaga_titulo), 1)) || LOWER(SUBSTRING(TRIM(v.vaga_titulo) FROM 2)) AS vaga_titulo,
             v.operacao_recrutador AS recrutador,
             ''requisicao vazia'' AS erro,
             NULL::TEXT AS dado_erro
@@ -225,7 +225,7 @@ BEGIN
         -- ============================================================
         SELECT
             v.requisicao,
-            v.vaga_titulo,
+            UPPER(LEFT(TRIM(v.vaga_titulo), 1)) || LOWER(SUBSTRING(TRIM(v.vaga_titulo) FROM 2)) AS vaga_titulo,
             v.operacao_recrutador AS recrutador,
             ''requisicao duplicada ('' || dup.qtd || '' ocorrencias)'' AS erro,
             NULL::TEXT AS dado_erro
@@ -245,7 +245,7 @@ BEGIN
         -- ============================================================
         SELECT
             v.requisicao,
-            v.vaga_titulo,
+            UPPER(LEFT(TRIM(v.vaga_titulo), 1)) || LOWER(SUBSTRING(TRIM(v.vaga_titulo) FROM 2)) AS vaga_titulo,
             v.operacao_recrutador AS recrutador,
             ''sla_utilizado vazio'' AS erro,
             NULL::TEXT AS dado_erro
@@ -259,7 +259,7 @@ BEGIN
         -- ============================================================
         SELECT
             v.requisicao,
-            v.vaga_titulo,
+            UPPER(LEFT(TRIM(v.vaga_titulo), 1)) || LOWER(SUBSTRING(TRIM(v.vaga_titulo) FROM 2)) AS vaga_titulo,
             v.operacao_recrutador AS recrutador,
             ''sla_utilizado inconsistente'' AS erro,
             v.sla_utilizado AS dado_erro
@@ -285,7 +285,7 @@ BEGIN
         -- ============================================================
         SELECT
             v.requisicao,
-            v.vaga_titulo,
+            UPPER(LEFT(TRIM(v.vaga_titulo), 1)) || LOWER(SUBSTRING(TRIM(v.vaga_titulo) FROM 2)) AS vaga_titulo,
             v.operacao_recrutador AS recrutador,
             ''status vazio'' AS erro,
             NULL::TEXT AS dado_erro
@@ -299,7 +299,7 @@ BEGIN
         -- ============================================================
         SELECT
             v.requisicao,
-            v.vaga_titulo,
+            UPPER(LEFT(TRIM(v.vaga_titulo), 1)) || LOWER(SUBSTRING(TRIM(v.vaga_titulo) FROM 2)) AS vaga_titulo,
             v.operacao_recrutador AS recrutador,
             ''status nao cadastrado'' AS erro,
             v.status AS dado_erro

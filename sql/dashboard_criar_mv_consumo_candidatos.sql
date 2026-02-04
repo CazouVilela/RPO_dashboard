@@ -84,7 +84,11 @@ BEGIN
             v_colunas_select := v_colunas_select || ',' || E'\n            ';
         END IF;
         v_colunas := v_colunas || format('%I', v_col.column_name);
-        v_colunas_select := v_colunas_select || format('c.%I', v_col.column_name);
+        IF v_col.column_name IN ('status_candidato') AND v_prefixo <> '' THEN
+            v_colunas_select := v_colunas_select || format('UPPER(LEFT(TRIM(c.%I), 1)) || LOWER(SUBSTRING(TRIM(c.%I) FROM 2)) AS %I', v_col.column_name, v_col.column_name, v_col.column_name);
+        ELSE
+            v_colunas_select := v_colunas_select || format('c.%I', v_col.column_name);
+        END IF;
     END LOOP;
 
     v_resultado := v_resultado || 'Colunas encontradas em ' || v_out_vw_candidatos || E'\n';

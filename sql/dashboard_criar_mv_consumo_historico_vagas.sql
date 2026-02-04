@@ -33,6 +33,7 @@ DECLARE
     v_out_vw_vagas TEXT;
     v_out_mv_consumo_vagas TEXT;
     v_out_mv_historico TEXT;
+    v_out_mv_erros_vagas TEXT;
     -- Variaveis de trabalho
     v_sql TEXT;
     v_resultado TEXT := '';
@@ -62,6 +63,18 @@ DECLARE
     v_sel_vagas_info TEXT := '';
     v_sel_hcs TEXT := '';
     v_sel_select TEXT := '';
+    -- campos extras de vagas (gestao_*, geo_*)
+    v_extra_vagas_com_rn TEXT := '';
+    v_extra_vagas_info TEXT := '';
+    v_extra_hcs TEXT := '';
+    v_extra_select TEXT := '';
+    v_extra_col_exists BOOLEAN;
+    -- SLA
+    v_has_sla_utilizado BOOLEAN := FALSE;
+    v_sla_vagas_com_rn TEXT := '';
+    v_sla_vagas_info TEXT := '';
+    v_sla_hcs TEXT := '';
+    v_sla_select TEXT := '';
     -- waiting to start generico
     v_has_data_admissao BOOLEAN := FALSE;
     v_status_fechada TEXT := NULL;
@@ -75,6 +88,9 @@ DECLARE
     v_admissao_sub TEXT;
     v_form_sub TEXT;
     v_holidays_sub TEXT;
+    -- exclusao de erros
+    v_has_erros_vagas BOOLEAN := FALSE;
+    v_filtro_erros TEXT := '';
 BEGIN
     -- ============================================================
     -- Logica de prefixo
@@ -96,6 +112,7 @@ BEGIN
     v_out_vw_vagas := v_prefixo || 'vw_vagas_nomeFixo';
     v_out_mv_consumo_vagas := v_prefixo || 'MV_CONSUMO_vagas';
     v_out_mv_historico := v_prefixo || 'MV_CONSUMO_historicoVagas';
+    v_out_mv_erros_vagas := v_prefixo || 'MV_CONSUMO_ERROS_VAGAS';
 
     IF v_prefixo <> '' THEN
         v_resultado := v_resultado || 'Versao: ' || p_versao || ' (prefixo: ' || v_prefixo || ')' || E'\n';
@@ -133,6 +150,29 @@ BEGIN
     v_resultado := v_resultado || 'Tabela vagas: ' || v_tabela_vagas || E'\n';
     v_resultado := v_resultado || 'Tipo contagem: ' || COALESCE(v_tipo_contagem, 'nao definido') || E'\n';
     v_resultado := v_resultado || 'Formato datas: ' || COALESCE(v_formato_datas, 'americano') || ' (' || v_formato_pg || ')' || E'\n';
+
+    -- ============================================================
+    -- Verificar se existe MV_CONSUMO_ERROS_VAGAS para excluir requisicoes com erro
+    -- ============================================================
+    EXECUTE format(
+        'SELECT EXISTS (
+            SELECT 1 FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = %L AND c.relname = %L
+        )',
+        p_schema, v_out_mv_erros_vagas
+    ) INTO v_has_erros_vagas;
+
+    IF v_has_erros_vagas THEN
+        v_filtro_erros := format('
+            AND NOT EXISTS (
+                SELECT 1 FROM %I.%I ev
+                WHERE TRIM(ev.requisicao) = TRIM(h.requisicao)
+            )', p_schema, v_out_mv_erros_vagas);
+        v_resultado := v_resultado || v_out_mv_erros_vagas || ': requisicoes com erro serao excluidas' || E'\n';
+    ELSE
+        v_resultado := v_resultado || v_out_mv_erros_vagas || ': nao encontrada' || E'\n';
+    END IF;
 
     -- ============================================================
     -- Verificar se geo_local existe na view de vagas
@@ -196,11 +236,88 @@ BEGIN
         v_resultado := v_resultado || 'DADOS_SELECIONADO extra (de vagas): ' || v_col.column_name || E'\n';
     END LOOP;
 
-    -- Concatenar fragmentos selecionado aos geo_local
-    v_geo_local_vagas_com_rn := v_geo_local_vagas_com_rn || v_sel_vagas_com_rn;
-    v_geo_local_vagas_info := v_geo_local_vagas_info || v_sel_vagas_info;
-    v_geo_local_hcs := v_geo_local_hcs || v_sel_hcs;
-    v_geo_local_select := v_geo_local_select || v_sel_select;
+    -- ============================================================
+    -- Campos extras de vagas: gestao_regional, gestao_estadual, geo_regiao, geo_uf, geo_cidade
+    -- Incluidos dinamicamente se existirem na view de vagas
+    -- ============================================================
+    FOR v_col IN
+        SELECT unnest AS column_name
+        FROM unnest(ARRAY['gestao_regional','gestao_estadual','geo_regiao','geo_uf','geo_cidade'])
+    LOOP
+        SELECT EXISTS (
+            SELECT 1 FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = p_schema AND c.relname = v_out_vw_vagas
+              AND a.attnum > 0 AND NOT a.attisdropped
+              AND a.attname = v_col.column_name
+        ) INTO v_extra_col_exists;
+
+        IF v_extra_col_exists THEN
+            v_extra_vagas_com_rn := v_extra_vagas_com_rn || format(', v.%I', v_col.column_name);
+            v_extra_vagas_info := v_extra_vagas_info || format(', %I', v_col.column_name);
+            v_extra_hcs := v_extra_hcs || format(', vi.%I', v_col.column_name);
+            -- Aplicar formatacao de texto nos campos geo_*
+            IF v_col.column_name IN ('geo_regiao', 'geo_cidade') THEN
+                v_extra_select := v_extra_select || format(', UPPER(LEFT(TRIM(hcs.%I), 1)) || LOWER(SUBSTRING(TRIM(hcs.%I) FROM 2)) AS %I', v_col.column_name, v_col.column_name, v_col.column_name);
+            ELSIF v_col.column_name = 'geo_uf' THEN
+                v_extra_select := v_extra_select || format(', UPPER(TRIM(hcs.%I)) AS %I', v_col.column_name, v_col.column_name);
+            ELSE
+                v_extra_select := v_extra_select || format(', TRIM(REPLACE(hcs.%I, chr(13), '''')) AS %I', v_col.column_name, v_col.column_name);
+            END IF;
+            v_resultado := v_resultado || 'Campo extra (de vagas): ' || v_col.column_name || E'\n';
+        END IF;
+    END LOOP;
+
+    -- ============================================================
+    -- Campo sla_utilizado de vagas (se existir)
+    -- ============================================================
+    SELECT EXISTS (
+        SELECT 1 FROM pg_attribute a
+        JOIN pg_class c ON c.oid = a.attrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = p_schema AND c.relname = v_out_vw_vagas
+          AND a.attnum > 0 AND NOT a.attisdropped
+          AND a.attname = 'sla_utilizado'
+    ) INTO v_has_sla_utilizado;
+
+    IF v_has_sla_utilizado THEN
+        v_sla_vagas_com_rn := ', v.sla_utilizado';
+        v_sla_vagas_info := ', sla_utilizado';
+        v_sla_hcs := ', vi.sla_utilizado';
+        v_sla_select := ', hcs.sla_utilizado';
+        v_resultado := v_resultado || 'sla_utilizado: INCLUIDO' || E'\n';
+    ELSE
+        v_resultado := v_resultado || 'sla_utilizado: NAO EXISTE' || E'\n';
+    END IF;
+
+    -- Concatenar fragmentos selecionado, extras e SLA aos geo_local
+    v_geo_local_vagas_com_rn := v_geo_local_vagas_com_rn || v_sel_vagas_com_rn || v_extra_vagas_com_rn || v_sla_vagas_com_rn;
+    v_geo_local_vagas_info := v_geo_local_vagas_info || v_sel_vagas_info || v_extra_vagas_info || v_sla_vagas_info;
+    v_geo_local_hcs := v_geo_local_hcs || v_sel_hcs || v_extra_hcs || v_sla_hcs;
+    v_geo_local_select := v_geo_local_select || v_sel_select || v_extra_select || v_sla_select;
+
+    -- ============================================================
+    -- Campo vaga_data_form de vw_vagas_nomeFixo (se existir)
+    -- ============================================================
+    SELECT EXISTS (
+        SELECT 1 FROM pg_attribute a
+        JOIN pg_class c ON c.oid = a.attrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = p_schema AND c.relname = v_out_vw_vagas
+          AND a.attnum > 0 AND NOT a.attisdropped
+          AND a.attname = 'vaga_data_form'
+    ) INTO v_has_form_in_view;
+
+    IF v_has_form_in_view THEN
+        v_geo_local_vagas_com_rn := v_geo_local_vagas_com_rn || ', v.vaga_data_form';
+        v_geo_local_vagas_info := v_geo_local_vagas_info || ', vaga_data_form';
+        v_geo_local_hcs := v_geo_local_hcs || ', vi.vaga_data_form';
+        v_geo_local_select := v_geo_local_select || ', hcs.vaga_data_form';
+        v_resultado := v_resultado || 'vaga_data_form: INCLUIDO' || E'\n';
+    ELSE
+        v_resultado := v_resultado || 'vaga_data_form: NAO EXISTE' || E'\n';
+    END IF;
 
     -- ============================================================
     -- Gerar colunas dinamicamente de USO_historicoVagas
@@ -218,7 +335,11 @@ BEGIN
             v_colunas_union := v_colunas_union || ', ';
         END IF;
         v_colunas_h := v_colunas_h || format('h.%I', v_col.column_name);
-        v_colunas_hcs := v_colunas_hcs || format('hcs.%I', v_col.column_name);
+        IF v_col.column_name = 'status' AND v_prefixo <> '' THEN
+            v_colunas_hcs := v_colunas_hcs || 'UPPER(LEFT(TRIM(hcs.status), 1)) || LOWER(SUBSTRING(TRIM(hcs.status) FROM 2)) AS status';
+        ELSE
+            v_colunas_hcs := v_colunas_hcs || format('hcs.%I', v_col.column_name);
+        END IF;
 
         CASE v_col.column_name
             WHEN 'id' THEN v_colunas_union := v_colunas_union || '-1 AS id';
@@ -290,7 +411,7 @@ BEGIN
                 WHEN (SELECT vg."Start_Date__Admission_" FROM %I.%I vg WHERE TRIM(vg."ID_Position_ADP") = TRIM(hcs.requisicao) LIMIT 1) IS NULL THEN NULL
                 WHEN TRIM((SELECT vg."Start_Date__Admission_" FROM %I.%I vg WHERE TRIM(vg."ID_Position_ADP") = TRIM(hcs.requisicao) LIMIT 1)) = '''' THEN NULL
                 WHEN (SELECT vg."Start_Date__Admission_" FROM %I.%I vg WHERE TRIM(vg."ID_Position_ADP") = TRIM(hcs.requisicao) LIMIT 1) !~ ''^\d{1,2}/\d{1,2}/\d{4}$'' THEN NULL
-                WHEN %L ILIKE ''%%%%uteis%%%%'' THEN (
+                WHEN %L ILIKE ''%%%%teis%%%%'' THEN (
                     SELECT COUNT(*)::INTEGER FROM generate_series(
                         hcs.data_abertura_vaga,
                         TO_DATE((SELECT vg2."Start_Date__Admission_" FROM %I.%I vg2 WHERE TRIM(vg2."ID_Position_ADP") = TRIM(hcs.requisicao) LIMIT 1), %L) - INTERVAL ''1 day'',
@@ -301,7 +422,7 @@ BEGIN
                 ELSE (
                     TO_DATE((SELECT vg3."Start_Date__Admission_" FROM %I.%I vg3 WHERE TRIM(vg3."ID_Position_ADP") = TRIM(hcs.requisicao) LIMIT 1), %L) - hcs.data_abertura_vaga
                 )::INTEGER
-            END AS dias_ate_inicio
+            END AS calc_dias_ate_inicio
         ', p_schema, v_tabela_vagas,
            p_schema, v_tabela_vagas,
            p_schema, v_tabela_vagas,
@@ -311,7 +432,7 @@ BEGIN
            p_schema, v_tabela_vagas, v_formato_pg);
     ELSE
         -- ============================================================
-        -- waiting to start GENERICO: para schemas com data_admissao
+        -- waiting to start GENERICO: para schemas com status Fechada
         -- ============================================================
         SELECT EXISTS (
             SELECT 1 FROM pg_attribute a
@@ -322,16 +443,14 @@ BEGIN
               AND a.attname = 'data_admissao'
         ) INTO v_has_data_admissao;
 
-        IF v_has_data_admissao THEN
-            EXECUTE format(
-                'SELECT status FROM %I.%I WHERE "funcaoSistema" = ''Fechada'' LIMIT 1',
-                p_schema, v_tbl_statusVagas
-            ) INTO v_status_fechada;
-        END IF;
+        EXECUTE format(
+            'SELECT status FROM %I.%I WHERE "funcaoSistema" = ''Fechada'' LIMIT 1',
+            p_schema, v_tbl_statusVagas
+        ) INTO v_status_fechada;
 
-        IF v_has_data_admissao AND v_status_fechada IS NOT NULL THEN
+        IF v_status_fechada IS NOT NULL THEN
             v_has_waiting_to_start := TRUE;
-            v_resultado := v_resultado || 'waiting to start: ATIVADO (generico, status fechada: ' || v_status_fechada || ')' || E'\n';
+            v_resultado := v_resultado || 'waiting to start: ATIVADO (generico, status fechada: ' || v_status_fechada || ', data_admissao: ' || v_has_data_admissao::TEXT || ')' || E'\n';
 
             v_colunas_union_generic := '';
             FOR v_col IN
@@ -339,6 +458,7 @@ BEGIN
                 FROM information_schema.columns
                 WHERE table_schema = p_schema
                   AND table_name = v_tbl_historicoVagas
+                  AND column_name NOT LIKE 'time_to_%'
                 ORDER BY ordinal_position
             LOOP
                 IF v_colunas_union_generic <> '' THEN
@@ -381,10 +501,7 @@ BEGIN
                 FROM (
                     SELECT v.*, ROW_NUMBER() OVER (PARTITION BY TRIM(v.requisicao) ORDER BY v.requisicao) as rn
                     FROM %I.%I v
-                    WHERE v.data_admissao IS NOT NULL
-                      AND TRIM(v.data_admissao) <> ''''
-                      AND v.data_admissao ~ ''^\d{1,2}/\d{1,2}/\d{4}$|^\d{4}-\d{2}-\d{2}$''
-                      AND v.requisicao IS NOT NULL
+                    WHERE v.requisicao IS NOT NULL
                       AND TRIM(v.requisicao) <> ''''
                 ) v
                 WHERE v.rn = 1
@@ -399,62 +516,74 @@ BEGIN
                   )
             ', v_colunas_union_generic, p_schema, v_out_vw_vagas, p_schema, v_out_mv_consumo_vagas, p_schema, v_tbl_historicoVagas, v_status_fechada);
 
-            v_status_fim_waiting_sql := format('
-                        WHEN ho.status = ''waiting to start'' THEN (
-                            SELECT CASE
-                                WHEN vw.data_admissao ~ ''^\d{1,2}/\d{1,2}/\d{4}$''
-                                THEN TO_DATE(vw.data_admissao, %L)
-                                WHEN vw.data_admissao ~ ''^\d{4}-\d{2}-\d{2}$''
-                                THEN TO_DATE(vw.data_admissao, ''YYYY-MM-DD'')
-                                ELSE NULL
-                            END
-                            FROM %I.%I vw
-                            WHERE TRIM(vw.requisicao) = TRIM(ho.requisicao)
-                            LIMIT 1
-                        )
-            ', v_formato_pg, p_schema, v_out_vw_vagas);
+            IF v_has_data_admissao THEN
+                v_status_fim_waiting_sql := format('
+                            WHEN ho.status = ''waiting to start'' THEN COALESCE(
+                                (SELECT CASE
+                                    WHEN vw.data_admissao ~ ''^\d{1,2}/\d{1,2}/\d{4}$''
+                                    THEN TO_DATE(vw.data_admissao, %L)
+                                    WHEN vw.data_admissao ~ ''^\d{4}-\d{2}-\d{2}$''
+                                    THEN TO_DATE(vw.data_admissao, ''YYYY-MM-DD'')
+                                    ELSE NULL
+                                END
+                                FROM %I.%I vw
+                                WHERE TRIM(vw.requisicao) = TRIM(ho.requisicao)
+                                LIMIT 1),
+                                CURRENT_DATE
+                            )
+                ', v_formato_pg, p_schema, v_out_vw_vagas);
+            ELSE
+                v_status_fim_waiting_sql := '
+                            WHEN ho.status = ''waiting to start'' THEN CURRENT_DATE
+                ';
+            END IF;
 
-            v_dias_ate_inicio_sql := format(',
-                CASE
-                    WHEN hcs.data_abertura_vaga IS NULL THEN NULL
-                    WHEN (SELECT vw.data_admissao FROM %I.%I vw WHERE TRIM(vw.requisicao) = TRIM(hcs.requisicao) LIMIT 1) IS NULL THEN NULL
-                    WHEN TRIM((SELECT vw.data_admissao FROM %I.%I vw WHERE TRIM(vw.requisicao) = TRIM(hcs.requisicao) LIMIT 1)) = '''' THEN NULL
-                    WHEN %L ILIKE ''%%%%uteis%%%%'' THEN (
-                        SELECT COUNT(*)::INTEGER FROM generate_series(
-                            hcs.data_abertura_vaga,
+            IF v_has_data_admissao THEN
+                v_dias_ate_inicio_sql := format(',
+                    CASE
+                        WHEN hcs.data_abertura_vaga IS NULL THEN NULL
+                        WHEN (SELECT vw.data_admissao FROM %I.%I vw WHERE TRIM(vw.requisicao) = TRIM(hcs.requisicao) LIMIT 1) IS NULL THEN NULL
+                        WHEN TRIM((SELECT vw.data_admissao FROM %I.%I vw WHERE TRIM(vw.requisicao) = TRIM(hcs.requisicao) LIMIT 1)) = '''' THEN NULL
+                        WHEN %L ILIKE ''%%%%teis%%%%'' THEN (
+                            SELECT COUNT(*)::INTEGER FROM generate_series(
+                                hcs.data_abertura_vaga,
+                                CASE
+                                    WHEN (SELECT vw2.data_admissao FROM %I.%I vw2 WHERE TRIM(vw2.requisicao) = TRIM(hcs.requisicao) LIMIT 1) ~ ''^\d{1,2}/\d{1,2}/\d{4}$''
+                                    THEN TO_DATE((SELECT vw2.data_admissao FROM %I.%I vw2 WHERE TRIM(vw2.requisicao) = TRIM(hcs.requisicao) LIMIT 1), %L)
+                                    ELSE TO_DATE((SELECT vw2.data_admissao FROM %I.%I vw2 WHERE TRIM(vw2.requisicao) = TRIM(hcs.requisicao) LIMIT 1), ''YYYY-MM-DD'')
+                                END - INTERVAL ''1 day'',
+                                ''1 day''::INTERVAL
+                            ) AS d(dt)
+                            WHERE EXTRACT(DOW FROM d.dt) NOT IN (0, 6)
+                              AND NOT EXISTS (SELECT 1 FROM %I.%I f WHERE TO_DATE(f."Data", %L) = d.dt::DATE))
+                        ELSE (
                             CASE
-                                WHEN (SELECT vw2.data_admissao FROM %I.%I vw2 WHERE TRIM(vw2.requisicao) = TRIM(hcs.requisicao) LIMIT 1) ~ ''^\d{1,2}/\d{1,2}/\d{4}$''
-                                THEN TO_DATE((SELECT vw2.data_admissao FROM %I.%I vw2 WHERE TRIM(vw2.requisicao) = TRIM(hcs.requisicao) LIMIT 1), %L)
-                                ELSE TO_DATE((SELECT vw2.data_admissao FROM %I.%I vw2 WHERE TRIM(vw2.requisicao) = TRIM(hcs.requisicao) LIMIT 1), ''YYYY-MM-DD'')
-                            END - INTERVAL ''1 day'',
-                            ''1 day''::INTERVAL
-                        ) AS d(dt)
-                        WHERE EXTRACT(DOW FROM d.dt) NOT IN (0, 6)
-                          AND NOT EXISTS (SELECT 1 FROM %I.%I f WHERE TO_DATE(f."Data", %L) = d.dt::DATE))
-                    ELSE (
-                        CASE
-                            WHEN (SELECT vw3.data_admissao FROM %I.%I vw3 WHERE TRIM(vw3.requisicao) = TRIM(hcs.requisicao) LIMIT 1) ~ ''^\d{1,2}/\d{1,2}/\d{4}$''
-                            THEN TO_DATE((SELECT vw3.data_admissao FROM %I.%I vw3 WHERE TRIM(vw3.requisicao) = TRIM(hcs.requisicao) LIMIT 1), %L)
-                            ELSE TO_DATE((SELECT vw3.data_admissao FROM %I.%I vw3 WHERE TRIM(vw3.requisicao) = TRIM(hcs.requisicao) LIMIT 1), ''YYYY-MM-DD'')
-                        END - hcs.data_abertura_vaga
-                    )::INTEGER
-                END AS dias_ate_inicio
-            ', p_schema, v_out_vw_vagas,
-               p_schema, v_out_vw_vagas,
-               v_tipo_contagem,
-               p_schema, v_out_vw_vagas,
-               p_schema, v_out_vw_vagas, v_formato_pg,
-               p_schema, v_out_vw_vagas,
-               p_schema, v_tbl_feriados, v_formato_pg,
-               p_schema, v_out_vw_vagas,
-               p_schema, v_out_vw_vagas, v_formato_pg,
-               p_schema, v_out_vw_vagas);
+                                WHEN (SELECT vw3.data_admissao FROM %I.%I vw3 WHERE TRIM(vw3.requisicao) = TRIM(hcs.requisicao) LIMIT 1) ~ ''^\d{1,2}/\d{1,2}/\d{4}$''
+                                THEN TO_DATE((SELECT vw3.data_admissao FROM %I.%I vw3 WHERE TRIM(vw3.requisicao) = TRIM(hcs.requisicao) LIMIT 1), %L)
+                                ELSE TO_DATE((SELECT vw3.data_admissao FROM %I.%I vw3 WHERE TRIM(vw3.requisicao) = TRIM(hcs.requisicao) LIMIT 1), ''YYYY-MM-DD'')
+                            END - hcs.data_abertura_vaga
+                        )::INTEGER
+                    END AS calc_dias_ate_inicio
+                ', p_schema, v_out_vw_vagas,
+                   p_schema, v_out_vw_vagas,
+                   v_tipo_contagem,
+                   p_schema, v_out_vw_vagas,
+                   p_schema, v_out_vw_vagas, v_formato_pg,
+                   p_schema, v_out_vw_vagas,
+                   p_schema, v_tbl_feriados, v_formato_pg,
+                   p_schema, v_out_vw_vagas,
+                   p_schema, v_out_vw_vagas, v_formato_pg,
+                   p_schema, v_out_vw_vagas);
+            ELSE
+                v_dias_ate_inicio_sql := ',
+                    NULL::INTEGER AS calc_dias_ate_inicio';
+            END IF;
         ELSE
-            v_resultado := v_resultado || 'waiting to start: DESATIVADO (sem data_admissao ou status Fechada)' || E'\n';
+            v_resultado := v_resultado || 'waiting to start: DESATIVADO (sem status Fechada)' || E'\n';
             v_waiting_to_start_sql := '';
             v_status_fim_waiting_sql := 'WHEN FALSE THEN NULL';
             v_dias_ate_inicio_sql := ',
-                NULL::INTEGER AS dias_ate_inicio';
+                NULL::INTEGER AS calc_dias_ate_inicio';
         END IF;
     END IF;
 
@@ -504,66 +633,145 @@ BEGIN
     END IF;
 
     -- Montar os 6 campos time_to_*
+    -- Todos respeitam v_tipo_contagem (uteis ou corridos) da configuracoesGerais
     -- time_to_fill* so preenchido para status com funcaoSistema = 'Fechada'
-    v_time_to_sql :=
-        -- 1. time_to_fill (dias corridos: abertura -> filled)
-        ',
-            CASE
-                WHEN hcs.funcao_sistema = ''Fechada'' AND hcs.data_abertura_vaga IS NOT NULL
-                THEN (' || v_filled_sub || ' - hcs.data_abertura_vaga)::INTEGER
-                ELSE NULL
-            END AS time_to_fill' ||
-        -- 2. time_to_start (dias corridos: abertura -> admissao)
-        ',
-            CASE
-                WHEN hcs.data_abertura_vaga IS NULL THEN NULL
-                WHEN ' || v_admissao_sub || ' IS NULL THEN NULL
-                ELSE (' || v_admissao_sub || ' - hcs.data_abertura_vaga)::INTEGER
-            END AS time_to_start' ||
-        -- 3. time_to_fill_no_holidays (dias uteis: abertura -> filled)
-        ',
-            CASE
-                WHEN hcs.funcao_sistema = ''Fechada'' AND hcs.data_abertura_vaga IS NOT NULL AND ' || v_filled_sub || ' IS NOT NULL
-                THEN (
-                    SELECT COUNT(*)::INTEGER FROM generate_series(
-                        hcs.data_abertura_vaga,
-                        ' || v_filled_sub || ' - INTERVAL ''1 day'',
-                        ''1 day''::INTERVAL
-                    ) AS d(dt)
-                    WHERE EXTRACT(DOW FROM d.dt) NOT IN (0, 6)
-                      AND ' || v_holidays_sub || '
-                )
-                ELSE NULL
-            END AS time_to_fill_no_holidays' ||
-        -- 4. time_to_start_no_holidays (dias uteis: abertura -> admissao)
-        ',
-            CASE
-                WHEN hcs.data_abertura_vaga IS NULL THEN NULL
-                WHEN ' || v_admissao_sub || ' IS NULL THEN NULL
-                ELSE (
-                    SELECT COUNT(*)::INTEGER FROM generate_series(
-                        hcs.data_abertura_vaga,
-                        ' || v_admissao_sub || ' - INTERVAL ''1 day'',
-                        ''1 day''::INTERVAL
-                    ) AS d(dt)
-                    WHERE EXTRACT(DOW FROM d.dt) NOT IN (0, 6)
-                      AND ' || v_holidays_sub || '
-                )
-            END AS time_to_start_no_holidays' ||
-        -- 5. time_to_fill_forms (dias corridos: form_date -> filled)
-        ',
-            CASE
-                WHEN hcs.funcao_sistema = ''Fechada'' AND ' || v_form_sub || ' IS NOT NULL AND ' || v_filled_sub || ' IS NOT NULL
-                THEN (' || v_filled_sub || ' - ' || v_form_sub || ')::INTEGER
-                ELSE NULL
-            END AS time_to_fill_forms' ||
-        -- 6. time_to_start_forms (dias corridos: form_date -> admissao)
-        ',
-            CASE
-                WHEN ' || v_form_sub || ' IS NULL THEN NULL
-                WHEN ' || v_admissao_sub || ' IS NULL THEN NULL
-                ELSE (' || v_admissao_sub || ' - ' || v_form_sub || ')::INTEGER
-            END AS time_to_start_forms';
+    IF COALESCE(v_tipo_contagem, '') ILIKE '%teis%' THEN
+        v_time_to_sql :=
+            -- 1. time_to_fill (uteis: abertura -> filled)
+            ',
+                CASE
+                    WHEN hcs.funcao_sistema = ''Fechada'' AND hcs.data_abertura_vaga IS NOT NULL AND ' || v_filled_sub || ' IS NOT NULL
+                    THEN (
+                        SELECT COUNT(*)::INTEGER FROM generate_series(
+                            hcs.data_abertura_vaga,
+                            ' || v_filled_sub || ',
+                            ''1 day''::INTERVAL
+                        ) AS d(dt)
+                        WHERE EXTRACT(DOW FROM d.dt) NOT IN (0, 6)
+                          AND ' || v_holidays_sub || '
+                    )
+                    ELSE NULL
+                END AS calc_time_to_fill' ||
+            -- 2. time_to_start (uteis: abertura -> admissao)
+            ',
+                CASE
+                    WHEN hcs.data_abertura_vaga IS NULL THEN NULL
+                    WHEN ' || v_admissao_sub || ' IS NULL THEN NULL
+                    ELSE (
+                        SELECT COUNT(*)::INTEGER FROM generate_series(
+                            hcs.data_abertura_vaga,
+                            ' || v_admissao_sub || ',
+                            ''1 day''::INTERVAL
+                        ) AS d(dt)
+                        WHERE EXTRACT(DOW FROM d.dt) NOT IN (0, 6)
+                          AND ' || v_holidays_sub || '
+                    )
+                END AS calc_time_to_start' ||
+            -- 3. time_to_fill_no_holidays (uteis: abertura -> filled)
+            ',
+                CASE
+                    WHEN hcs.funcao_sistema = ''Fechada'' AND hcs.data_abertura_vaga IS NOT NULL AND ' || v_filled_sub || ' IS NOT NULL
+                    THEN (
+                        SELECT COUNT(*)::INTEGER FROM generate_series(
+                            hcs.data_abertura_vaga,
+                            ' || v_filled_sub || ',
+                            ''1 day''::INTERVAL
+                        ) AS d(dt)
+                        WHERE EXTRACT(DOW FROM d.dt) NOT IN (0, 6)
+                          AND ' || v_holidays_sub || '
+                    )
+                    ELSE NULL
+                END AS calc_time_to_fill_no_holidays' ||
+            -- 4. time_to_start_no_holidays (uteis: abertura -> admissao)
+            ',
+                CASE
+                    WHEN hcs.data_abertura_vaga IS NULL THEN NULL
+                    WHEN ' || v_admissao_sub || ' IS NULL THEN NULL
+                    ELSE (
+                        SELECT COUNT(*)::INTEGER FROM generate_series(
+                            hcs.data_abertura_vaga,
+                            ' || v_admissao_sub || ',
+                            ''1 day''::INTERVAL
+                        ) AS d(dt)
+                        WHERE EXTRACT(DOW FROM d.dt) NOT IN (0, 6)
+                          AND ' || v_holidays_sub || '
+                    )
+                END AS calc_time_to_start_no_holidays' ||
+            -- 5. time_to_fill_forms (uteis: form_date -> filled)
+            ',
+                CASE
+                    WHEN hcs.funcao_sistema = ''Fechada'' AND ' || v_form_sub || ' IS NOT NULL AND ' || v_filled_sub || ' IS NOT NULL
+                    THEN (
+                        SELECT COUNT(*)::INTEGER FROM generate_series(
+                            ' || v_form_sub || ',
+                            ' || v_filled_sub || ',
+                            ''1 day''::INTERVAL
+                        ) AS d(dt)
+                        WHERE EXTRACT(DOW FROM d.dt) NOT IN (0, 6)
+                          AND ' || v_holidays_sub || '
+                    )
+                    ELSE NULL
+                END AS calc_time_to_fill_forms' ||
+            -- 6. time_to_start_forms (uteis: form_date -> admissao)
+            ',
+                CASE
+                    WHEN ' || v_form_sub || ' IS NULL THEN NULL
+                    WHEN ' || v_admissao_sub || ' IS NULL THEN NULL
+                    ELSE (
+                        SELECT COUNT(*)::INTEGER FROM generate_series(
+                            ' || v_form_sub || ',
+                            ' || v_admissao_sub || ',
+                            ''1 day''::INTERVAL
+                        ) AS d(dt)
+                        WHERE EXTRACT(DOW FROM d.dt) NOT IN (0, 6)
+                          AND ' || v_holidays_sub || '
+                    )
+                END AS calc_time_to_start_forms';
+    ELSE
+        v_time_to_sql :=
+            -- 1. time_to_fill (corridos: abertura -> filled)
+            ',
+                CASE
+                    WHEN hcs.funcao_sistema = ''Fechada'' AND hcs.data_abertura_vaga IS NOT NULL
+                    THEN (' || v_filled_sub || ' - hcs.data_abertura_vaga)::INTEGER
+                    ELSE NULL
+                END AS calc_time_to_fill' ||
+            -- 2. time_to_start (corridos: abertura -> admissao)
+            ',
+                CASE
+                    WHEN hcs.data_abertura_vaga IS NULL THEN NULL
+                    WHEN ' || v_admissao_sub || ' IS NULL THEN NULL
+                    ELSE (' || v_admissao_sub || ' - hcs.data_abertura_vaga)::INTEGER
+                END AS calc_time_to_start' ||
+            -- 3. time_to_fill_no_holidays (corridos: abertura -> filled)
+            ',
+                CASE
+                    WHEN hcs.funcao_sistema = ''Fechada'' AND hcs.data_abertura_vaga IS NOT NULL
+                    THEN (' || v_filled_sub || ' - hcs.data_abertura_vaga)::INTEGER
+                    ELSE NULL
+                END AS calc_time_to_fill_no_holidays' ||
+            -- 4. time_to_start_no_holidays (corridos: abertura -> admissao)
+            ',
+                CASE
+                    WHEN hcs.data_abertura_vaga IS NULL THEN NULL
+                    WHEN ' || v_admissao_sub || ' IS NULL THEN NULL
+                    ELSE (' || v_admissao_sub || ' - hcs.data_abertura_vaga)::INTEGER
+                END AS calc_time_to_start_no_holidays' ||
+            -- 5. time_to_fill_forms (corridos: form_date -> filled)
+            ',
+                CASE
+                    WHEN hcs.funcao_sistema = ''Fechada'' AND ' || v_form_sub || ' IS NOT NULL AND ' || v_filled_sub || ' IS NOT NULL
+                    THEN (' || v_filled_sub || ' - ' || v_form_sub || ')::INTEGER
+                    ELSE NULL
+                END AS calc_time_to_fill_forms' ||
+            -- 6. time_to_start_forms (corridos: form_date -> admissao)
+            ',
+                CASE
+                    WHEN ' || v_form_sub || ' IS NULL THEN NULL
+                    WHEN ' || v_admissao_sub || ' IS NULL THEN NULL
+                    ELSE (' || v_admissao_sub || ' - ' || v_form_sub || ')::INTEGER
+                END AS calc_time_to_start_forms';
+    END IF;
 
     -- ============================================================
     -- Construir SQL principal
@@ -579,6 +787,7 @@ BEGIN
                 SELECT 1 FROM %I.%I mv
                 WHERE TRIM(mv.requisicao) = TRIM(h.requisicao)
             )
+            %s
             %s
         ),
         historico_ordenado AS (
@@ -596,7 +805,7 @@ BEGIN
         ),
         vagas_com_rn AS (
             SELECT
-                v.requisicao, v.vaga_titulo, v.data_abertura%s,
+                v.requisicao, UPPER(LEFT(TRIM(v.vaga_titulo), 1)) || LOWER(SUBSTRING(TRIM(v.vaga_titulo) FROM 2)) AS vaga_titulo, v.data_abertura%s,
                 ROW_NUMBER() OVER (PARTITION BY v.requisicao ORDER BY v.data_abertura DESC) as rn
             FROM %I.%I v
             WHERE v.requisicao IS NOT NULL AND TRIM(v.requisicao) <> ''''
@@ -628,7 +837,7 @@ BEGIN
                 ho.*,
                 sv."fimFluxo" AS fim_fluxo,
                 CASE WHEN ho.status = ''waiting to start'' THEN 9999 ELSE sv."sequencia"::INTEGER END AS sequencia_status,
-                sv."responsavel" AS responsavel_status,
+                UPPER(LEFT(TRIM(sv."responsavel"), 1)) || LOWER(SUBSTRING(TRIM(sv."responsavel") FROM 2)) AS responsavel_status,
                 sv."funcaoSistema" AS funcao_sistema,
                 CASE
                     %s
@@ -668,8 +877,8 @@ BEGIN
         SELECT
             %s,
             hcs.fim_fluxo, hcs.sequencia_status, hcs.responsavel_status, hcs.funcao_sistema,
-            hcs.status_fim, hcs.primeira_ocorrencia, hcs.vaga_titulo%s,
-            hcs.requisicao || '' - '' || COALESCE(hcs.vaga_titulo, '''') AS indice,
+            hcs.status_fim AS calc_status_fim, hcs.primeira_ocorrencia AS calc_primeira_ocorrencia, hcs.vaga_titulo%s,
+            hcs.requisicao || '' - '' || COALESCE(hcs.vaga_titulo, '''') AS calc_indice,
             CASE
                 WHEN pv.proximo_status_efetivo IS NULL THEN NULL
                 WHEN (SELECT sv_ef."funcaoSistema" FROM %I.%I sv_ef
@@ -679,11 +888,11 @@ BEGIN
                 WHEN (SELECT sv_ef."sequencia"::INTEGER FROM %I.%I sv_ef
                       WHERE TRIM(sv_ef.status) = TRIM(pv.proximo_status_efetivo)) < COALESCE(hcs.sequencia_status::INTEGER, 999999) THEN ''Nao''
                 ELSE NULL
-            END AS sucesso_status,
-            hcs.data_abertura_vaga,
+            END AS calc_sucesso_status,
+            hcs.data_abertura_vaga AS calc_data_abertura_vaga,
             CASE
                 WHEN hcs.data_abertura_vaga IS NULL OR hcs.created_at IS NULL THEN NULL
-                WHEN %L ILIKE ''%%uteis%%'' THEN (
+                WHEN %L ILIKE ''%%teis%%'' THEN (
                     SELECT COUNT(*)::INTEGER FROM generate_series(
                         hcs.data_abertura_vaga,
                         hcs.created_at::DATE - INTERVAL ''1 day'',
@@ -692,10 +901,10 @@ BEGIN
                     WHERE EXTRACT(DOW FROM d.dt) NOT IN (0, 6)
                       AND NOT EXISTS (SELECT 1 FROM %I.%I f WHERE TO_DATE(f."Data", %L) = d.dt::DATE))
                 ELSE (hcs.created_at::DATE - hcs.data_abertura_vaga)::INTEGER
-            END AS dias_abertura_ate_status,
+            END AS calc_dias_abertura_ate_status,
             CASE
                 WHEN hcs.created_at IS NULL THEN NULL
-                WHEN %L ILIKE ''%%uteis%%'' THEN (
+                WHEN %L ILIKE ''%%teis%%'' THEN (
                     SELECT COUNT(*)::INTEGER FROM generate_series(
                         hcs.created_at::DATE,
                         COALESCE(hcs.status_fim, CURRENT_DATE) - INTERVAL ''1 day'',
@@ -704,7 +913,7 @@ BEGIN
                     WHERE EXTRACT(DOW FROM d.dt) NOT IN (0, 6)
                       AND NOT EXISTS (SELECT 1 FROM %I.%I f WHERE TO_DATE(f."Data", %L) = d.dt::DATE))
                 ELSE (COALESCE(hcs.status_fim, CURRENT_DATE) - hcs.created_at::DATE)::INTEGER
-            END AS dias_no_status,
+            END AS calc_dias_no_status,
             CASE
                 WHEN hcs.funcao_sistema = ''Fechada'' THEN
                     CASE WHEN hcs.created_at = (
@@ -715,7 +924,7 @@ BEGIN
                           AND sv_uf."funcaoSistema" = ''Fechada''
                     ) THEN ''Sim'' ELSE ''Nao'' END
                 ELSE NULL
-            END AS ultimo_filled
+            END AS calc_ultimo_filled
             %s
         FROM historico_com_status hcs
         LEFT JOIN proximo_valido pv ON TRIM(pv.requisicao) = TRIM(hcs.requisicao) AND pv.created_at = hcs.created_at AND TRIM(pv.status) = TRIM(hcs.status)
@@ -725,7 +934,8 @@ BEGIN
        v_colunas_h,                                            -- 5: colunas dinamicas
        p_schema, v_tbl_historicoVagas,                         -- 6-7: USO_historicoVagas
        p_schema, v_out_mv_consumo_vagas,                       -- 8-9: mv_CONSUMO_vagas
-       v_waiting_to_start_sql,                                 -- 10: UNION ALL
+       v_filtro_erros,                                         -- 10: exclusao de requisicoes com erro
+       v_waiting_to_start_sql,                                 -- 11: UNION ALL
        v_geo_local_vagas_com_rn,                               -- 11: geo_local em vagas_com_rn
        p_schema, v_out_vw_vagas, v_formato_pg,                 -- 12-14: vw_vagas_nomeFixo, TO_DATE
        v_geo_local_vagas_info,                                 -- 15: geo_local em vagas_info
@@ -744,6 +954,11 @@ BEGIN
        v_tipo_contagem, p_schema, v_tbl_feriados, v_formato_pg, -- 37-40: dias_no_status
        p_schema, v_tbl_statusVagas,                            -- 41-42: ultimo_filled
        v_dias_ate_inicio_sql || v_time_to_sql);                -- 43: dias_ate_inicio + time_to_*
+
+    -- V1: remover prefixo calc_ dos campos calculados
+    IF v_prefixo = '' THEN
+        v_sql := REPLACE(v_sql, 'calc_', '');
+    END IF;
 
     EXECUTE v_sql;
 

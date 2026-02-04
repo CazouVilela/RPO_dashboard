@@ -278,7 +278,7 @@ BEGIN
 
         CREATE MATERIALIZED VIEW %I.%I AS
         SELECT
-            t.status,
+            %s AS status,
             t."sequencia"::INTEGER AS sequencia_status,
             REPLACE(kv.key, ''_'', '' '') AS tipo_sla,
             kv.key AS tipo_sla_original,
@@ -300,7 +300,9 @@ BEGIN
             )
         ) AS kv
         WHERE kv.value IS NOT NULL AND kv.value <> ''''
-    ', p_schema, v_out_mv_slas, p_schema, v_out_mv_slas, p_schema, v_tbl_statusVagas);
+    ', p_schema, v_out_mv_slas, p_schema, v_out_mv_slas,
+       CASE WHEN v_prefixo <> '' THEN 'UPPER(LEFT(TRIM(t.status), 1)) || LOWER(SUBSTRING(TRIM(t.status) FROM 2))' ELSE 't.status' END,
+       p_schema, v_tbl_statusVagas);
 
     EXECUTE v_sql;
     v_resultado := v_resultado || 'Materialized view ' || v_out_mv_slas || ' criada' || E'\n';
@@ -354,6 +356,7 @@ DECLARE
     v_out_vw_candidatos TEXT;
     v_out_mv_slas TEXT;
     v_out_mv_consumo_vagas TEXT;
+    v_out_mv_erros_vagas TEXT;
     -- Variaveis de trabalho
     v_sql TEXT;
     v_resultado TEXT := '';
@@ -365,6 +368,8 @@ DECLARE
     v_select_cols TEXT := '';
     v_col RECORD;
     v_has_listas BOOLEAN := FALSE;
+    v_has_erros_vagas BOOLEAN := FALSE;
+    v_filtro_erros TEXT := '';
     v_geo_select TEXT := '';
     v_geo_join TEXT := '';
     v_colunas_vagas TEXT := '';
@@ -392,6 +397,7 @@ BEGIN
     v_out_vw_candidatos := v_prefixo || 'vw_candidatos_nomeFixo';
     v_out_mv_slas := v_prefixo || 'MV_SLAs';
     v_out_mv_consumo_vagas := v_prefixo || 'MV_CONSUMO_vagas';
+    v_out_mv_erros_vagas := v_prefixo || 'MV_CONSUMO_ERROS_VAGAS';
 
     IF v_prefixo <> '' THEN
         v_resultado := v_resultado || 'Versao: ' || p_versao || ' (prefixo: ' || v_prefixo || ')' || E'\n';
@@ -444,6 +450,29 @@ BEGIN
     END IF;
 
     -- ============================================================
+    -- Verificar se existe MV_CONSUMO_ERROS_VAGAS para excluir requisicoes com erro
+    -- ============================================================
+    EXECUTE format(
+        'SELECT EXISTS (
+            SELECT 1 FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = %L AND c.relname = %L
+        )',
+        p_schema, v_out_mv_erros_vagas
+    ) INTO v_has_erros_vagas;
+
+    IF v_has_erros_vagas THEN
+        v_filtro_erros := format('
+              AND NOT EXISTS (
+                  SELECT 1 FROM %I.%I ev
+                  WHERE TRIM(ev.requisicao) = TRIM(vagas_com_rn.requisicao)
+              )', p_schema, v_out_mv_erros_vagas);
+        v_resultado := v_resultado || v_out_mv_erros_vagas || ' encontrada: requisicoes com erro serao excluidas' || E'\n';
+    ELSE
+        v_resultado := v_resultado || v_out_mv_erros_vagas || ' nao encontrada: nenhuma exclusao aplicada' || E'\n';
+    END IF;
+
+    -- ============================================================
     -- Buscar colunas marcadas como 'date' no dicionario
     -- ============================================================
     v_resultado := v_resultado || 'Colunas tipo date no dicionario:' || E'\n';
@@ -488,6 +517,16 @@ BEGIN
                 v_col.column_name, v_col.column_name,
                 v_col.column_name
             );
+        ELSIF v_col.column_name IN ('geo_regiao', 'geo_cidade', 'status', 'vaga_titulo') THEN
+            v_colunas_vagas := v_colunas_vagas || v_col.column_name;
+            IF v_prefixo <> '' OR v_col.column_name <> 'status' THEN
+                v_colunas_vagas_v := v_colunas_vagas_v || format('UPPER(LEFT(TRIM(v.%I), 1)) || LOWER(SUBSTRING(TRIM(v.%I) FROM 2)) AS %I', v_col.column_name, v_col.column_name, v_col.column_name);
+            ELSE
+                v_colunas_vagas_v := v_colunas_vagas_v || 'v.' || v_col.column_name;
+            END IF;
+        ELSIF v_col.column_name IN ('geo_uf', 'vaga_banco') THEN
+            v_colunas_vagas := v_colunas_vagas || v_col.column_name;
+            v_colunas_vagas_v := v_colunas_vagas_v || format('UPPER(TRIM(v.%I)) AS %I', v_col.column_name, v_col.column_name);
         ELSE
             v_colunas_vagas := v_colunas_vagas || v_col.column_name;
             v_colunas_vagas_v := v_colunas_vagas_v || 'v.' || v_col.column_name;
@@ -495,7 +534,7 @@ BEGIN
     END LOOP;
 
     v_sql := format('
-        DROP MATERIALIZED VIEW IF EXISTS %I.%I;
+        DROP MATERIALIZED VIEW IF EXISTS %I.%I CASCADE;
 
         CREATE MATERIALIZED VIEW %I.%I AS
         WITH vagas_com_rn AS (
@@ -520,6 +559,7 @@ BEGIN
         ),
         vagas_filtradas AS (
             SELECT %s FROM vagas_com_rn WHERE rn = 1
+            %s
         ),
         dados_base AS (
         SELECT
@@ -527,7 +567,7 @@ BEGIN
             sv.valor_sla::INTEGER AS calc_SLA_do_status,
             st."fimFluxo" AS fim_fluxo,
             st."sequencia" AS sequencia_status,
-            st."responsavel" AS responsavel_status,
+            UPPER(LEFT(TRIM(st."responsavel"), 1)) || LOWER(SUBSTRING(TRIM(st."responsavel") FROM 2)) AS responsavel_status,
             st."funcaoSistema" AS funcao_sistema,
             hist.data_inicio_status AS calc_data_inicio_status,
             CASE
@@ -547,7 +587,7 @@ BEGIN
             CASE
                 WHEN st."fimFluxo" = ''Sim'' THEN 0
                 WHEN hist.data_inicio_status IS NULL THEN NULL
-                WHEN %L ILIKE ''%%uteis%%'' THEN (
+                WHEN %L ILIKE ''%%teis%%'' THEN (
                     SELECT COUNT(*)::INTEGER
                     FROM generate_series(
                         hist.data_inicio_status,
@@ -567,7 +607,7 @@ BEGIN
             CASE
                 WHEN v.data_abertura IS NULL THEN NULL
                 WHEN st."fimFluxo" = ''Sim'' AND hist.data_inicio_status IS NULL THEN NULL
-                WHEN %L ILIKE ''%%uteis%%'' THEN (
+                WHEN %L ILIKE ''%%teis%%'' THEN (
                     SELECT COUNT(*)::INTEGER
                     FROM generate_series(
                         CASE
@@ -660,6 +700,7 @@ BEGIN
     p_schema, v_out_mv_consumo_vagas,                          -- CREATE
     p_schema, v_out_vw_vagas, v_formato_pg,                    -- vagas_com_rn (view + formato)
     v_colunas_vagas,                                           -- vagas_filtradas
+    v_filtro_erros,                                            -- exclusao de requisicoes com erro
     v_colunas_vagas_v,                                         -- dados_base SELECT
     p_schema, v_out_mv_slas,                                   -- SLA_da_abertura: mv_SLAs
     p_schema, v_tbl_statusVagas,                               -- SLA_da_abertura: statusVagas
