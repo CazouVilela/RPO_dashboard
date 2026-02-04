@@ -86,14 +86,22 @@ Cada dashboard possui os seguintes parâmetros:
 - Scripts em `/home/cazouvilela/projetos/RPO-V4/api_historico/`: cdp_map_rev_ids.js, extract_status_changes.py
 - A coluna "Log de atividades" (AQ) da planilha foi rejeitada como não confiável pelo usuário
 
-**Tabela log_history_rebuild (reconstrução do histórico simulando AppScript):**
-- 334 registros simulando como USO_historicoVagas seria populado pelo AppScript
+**Tabela log_history_rebuild (reconstrução COMPLETA do histórico simulando AppScript):**
+- 334 registros com TODOS os campos preenchidos (snapshot completo de cada mudança de status)
 - Estrutura idêntica a USO_historicoVagas (22 colunas)
 - 84 requisições únicas, 9 usuários
 - Período: 2 de janeiro a 4 de fevereiro de 2025
-- Campos cdd_* e selecionado_* vazios (não foram extraídos do histórico de versões)
-- Script de rebuild: scripts/rebuild_history.py
-- SQL de criação: sql/create_log_history_rebuild.sql
+- 47 registros com selecionado_nome preenchido
+- 109 registros com cdd_totais_sl preenchido
+- Campos de proposta (operacao_*) também preenchidos
+- Script de rebuild: scripts/rebuild_history_complete.py
+
+**Tabela log_history_rebuildCandidatos (reconstrução COMPLETA do histórico de candidatos):**
+- 2001 registros com todos os campos preenchidos
+- Estrutura idêntica a USO_historicoCandidatos (14 colunas)
+- 1354 candidatos únicos
+- Período: 2 de janeiro a 4 de fevereiro de 2025
+- Script de rebuild: scripts/rebuild_history_candidatos.py
 
 **Tipo contagem:** Dias úteis
 **Formato datas:** brasileiro (DD/MM/YYYY)
