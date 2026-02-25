@@ -181,6 +181,8 @@ id, cargo, etapa, e_mail, gestor, status (texto livre), destino, situacao, histo
 
 **pg_cron (job 123):** `0 1 * * *` - Recria tabela `dashboard` todos os dias à 1h da manhã
 
+**Permissões:** `rpo_user` com USAGE no schema + SELECT em todas as tabelas + DEFAULT PRIVILEGES para tabelas futuras. Looker Studio conecta via `rpo_user`.
+
 <!-- CHAPTER: 3 Tabela de Configurações -->
 
 ## Tabela de Configurações (Padrão para todos os dashboards)
