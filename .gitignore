@@ -8,3 +8,6 @@ __pycache__/
 .env.local
 dist/
 build/
+
+# Terminal logs (real-time session logs)
+terminal_logs/

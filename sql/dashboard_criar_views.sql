@@ -461,13 +461,17 @@ BEGIN
         p_schema, v_out_mv_erros_vagas
     ) INTO v_has_erros_vagas;
 
-    IF v_has_erros_vagas THEN
+    IF v_has_erros_vagas AND v_prefixo <> '' THEN
+        -- V2: exclusao agressiva - remove requisicoes com qualquer erro
         v_filtro_erros := format('
               AND NOT EXISTS (
                   SELECT 1 FROM %I.%I ev
                   WHERE TRIM(ev.requisicao) = TRIM(vagas_com_rn.requisicao)
               )', p_schema, v_out_mv_erros_vagas);
-        v_resultado := v_resultado || v_out_mv_erros_vagas || ' encontrada: requisicoes com erro serao excluidas' || E'\n';
+        v_resultado := v_resultado || v_out_mv_erros_vagas || ' encontrada: requisicoes com erro serao excluidas (V2)' || E'\n';
+    ELSIF v_has_erros_vagas THEN
+        -- V1: erros sao apenas informativos, nao excluem vagas
+        v_resultado := v_resultado || v_out_mv_erros_vagas || ' encontrada: apenas informativo (V1, sem exclusao)' || E'\n';
     ELSE
         v_resultado := v_resultado || v_out_mv_erros_vagas || ' nao encontrada: nenhuma exclusao aplicada' || E'\n';
     END IF;
@@ -662,15 +666,15 @@ BEGIN
         FROM vagas_filtradas v
         %s
         LEFT JOIN %I.%I sv
-            ON TRIM(sv.status) = TRIM(v.status)
-            AND TRIM(sv.tipo_sla) = TRIM(v.sla_utilizado)
+            ON UPPER(TRIM(sv.status)) = UPPER(TRIM(v.status))
+            AND UPPER(TRIM(sv.tipo_sla)) = UPPER(TRIM(v.sla_utilizado))
         LEFT JOIN %I.%I st
-            ON TRIM(st.status) = TRIM(v.status)
+            ON UPPER(TRIM(st.status)) = UPPER(TRIM(v.status))
         LEFT JOIN LATERAL (
             SELECT MAX(h.created_at)::DATE AS data_inicio_status
             FROM %I.%I h
             WHERE TRIM(h.requisicao) = TRIM(v.requisicao)
-              AND TRIM(h.status) = TRIM(v.status)
+              AND UPPER(TRIM(h.status)) = UPPER(TRIM(v.status))
         ) hist ON TRUE
         LEFT JOIN LATERAL (
             SELECT MIN(h2.created_at)::DATE AS data_final_status
@@ -680,7 +684,7 @@ BEGIN
                   SELECT MAX(h3.created_at)
                   FROM %I.%I h3
                   WHERE TRIM(h3.requisicao) = TRIM(v.requisicao)
-                    AND TRIM(h3.status) = TRIM(v.status)
+                    AND UPPER(TRIM(h3.status)) = UPPER(TRIM(v.status))
               )
         ) hist_fim ON hist.data_inicio_status IS NOT NULL
         )

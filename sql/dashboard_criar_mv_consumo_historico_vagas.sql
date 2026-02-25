@@ -69,6 +69,10 @@ DECLARE
     v_extra_hcs TEXT := '';
     v_extra_select TEXT := '';
     v_extra_col_exists BOOLEAN;
+    -- indice dinamico (geo_cidade e geo_uf)
+    v_has_geo_cidade BOOLEAN := FALSE;
+    v_has_geo_uf BOOLEAN := FALSE;
+    v_calc_indice_sql TEXT := '';
     -- SLA
     v_has_sla_utilizado BOOLEAN := FALSE;
     v_sla_vagas_com_rn TEXT := '';
@@ -163,13 +167,17 @@ BEGIN
         p_schema, v_out_mv_erros_vagas
     ) INTO v_has_erros_vagas;
 
-    IF v_has_erros_vagas THEN
+    IF v_has_erros_vagas AND v_prefixo <> '' THEN
+        -- V2: exclusao agressiva - remove requisicoes com qualquer erro
         v_filtro_erros := format('
             AND NOT EXISTS (
                 SELECT 1 FROM %I.%I ev
                 WHERE TRIM(ev.requisicao) = TRIM(h.requisicao)
             )', p_schema, v_out_mv_erros_vagas);
-        v_resultado := v_resultado || v_out_mv_erros_vagas || ': requisicoes com erro serao excluidas' || E'\n';
+        v_resultado := v_resultado || v_out_mv_erros_vagas || ': requisicoes com erro serao excluidas (V2)' || E'\n';
+    ELSIF v_has_erros_vagas THEN
+        -- V1: erros sao apenas informativos, nao excluem vagas
+        v_resultado := v_resultado || v_out_mv_erros_vagas || ': apenas informativo (V1, sem exclusao)' || E'\n';
     ELSE
         v_resultado := v_resultado || v_out_mv_erros_vagas || ': nao encontrada' || E'\n';
     END IF;
@@ -260,8 +268,12 @@ BEGIN
             -- Aplicar formatacao de texto nos campos geo_*
             IF v_col.column_name IN ('geo_regiao', 'geo_cidade') THEN
                 v_extra_select := v_extra_select || format(', UPPER(LEFT(TRIM(hcs.%I), 1)) || LOWER(SUBSTRING(TRIM(hcs.%I) FROM 2)) AS %I', v_col.column_name, v_col.column_name, v_col.column_name);
+                IF v_col.column_name = 'geo_cidade' THEN
+                    v_has_geo_cidade := TRUE;
+                END IF;
             ELSIF v_col.column_name = 'geo_uf' THEN
                 v_extra_select := v_extra_select || format(', UPPER(TRIM(hcs.%I)) AS %I', v_col.column_name, v_col.column_name);
+                v_has_geo_uf := TRUE;
             ELSE
                 v_extra_select := v_extra_select || format(', TRIM(REPLACE(hcs.%I, chr(13), '''')) AS %I', v_col.column_name, v_col.column_name);
             END IF;
@@ -296,6 +308,20 @@ BEGIN
     v_geo_local_vagas_info := v_geo_local_vagas_info || v_sel_vagas_info || v_extra_vagas_info || v_sla_vagas_info;
     v_geo_local_hcs := v_geo_local_hcs || v_sel_hcs || v_extra_hcs || v_sla_hcs;
     v_geo_local_select := v_geo_local_select || v_sel_select || v_extra_select || v_sla_select;
+
+    -- ============================================================
+    -- Montar calc_indice dinamicamente
+    -- Formato: requisicao - vaga_titulo | geo_cidade - geo_uf (se existirem)
+    -- ============================================================
+    IF v_has_geo_cidade AND v_has_geo_uf THEN
+        v_calc_indice_sql := 'hcs.requisicao || '' - '' || COALESCE(hcs.vaga_titulo, '''') || '' | '' || COALESCE(hcs.geo_cidade, '''') || '' - '' || COALESCE(hcs.geo_uf, '''')';
+    ELSIF v_has_geo_cidade THEN
+        v_calc_indice_sql := 'hcs.requisicao || '' - '' || COALESCE(hcs.vaga_titulo, '''') || '' | '' || COALESCE(hcs.geo_cidade, '''')';
+    ELSIF v_has_geo_uf THEN
+        v_calc_indice_sql := 'hcs.requisicao || '' - '' || COALESCE(hcs.vaga_titulo, '''') || '' | '' || COALESCE(hcs.geo_uf, '''')';
+    ELSE
+        v_calc_indice_sql := 'hcs.requisicao || '' - '' || COALESCE(hcs.vaga_titulo, '''')';
+    END IF;
 
     -- ============================================================
     -- Campo vaga_data_form de vw_vagas_nomeFixo (se existir)
@@ -878,7 +904,7 @@ BEGIN
             %s,
             hcs.fim_fluxo, hcs.sequencia_status, hcs.responsavel_status, hcs.funcao_sistema,
             hcs.status_fim AS calc_status_fim, hcs.primeira_ocorrencia AS calc_primeira_ocorrencia, hcs.vaga_titulo%s,
-            hcs.requisicao || '' - '' || COALESCE(hcs.vaga_titulo, '''') AS calc_indice,
+            %s AS calc_indice,
             CASE
                 WHEN pv.proximo_status_efetivo IS NULL THEN NULL
                 WHEN (SELECT sv_ef."funcaoSistema" FROM %I.%I sv_ef
@@ -947,7 +973,8 @@ BEGIN
        p_schema, v_tbl_statusVagas,                            -- 23-24: USO_statusVagas (sv2)
        v_colunas_hcs,                                          -- 25: colunas dinamicas
        v_geo_local_select,                                     -- 26: geo_local no SELECT final
-       p_schema, v_tbl_statusVagas,                            -- 27-28: USO_statusVagas (sucesso 1)
+       v_calc_indice_sql,                                      -- 27: calc_indice dinamico
+       p_schema, v_tbl_statusVagas,                            -- 28-29: USO_statusVagas (sucesso 1)
        p_schema, v_tbl_statusVagas,                            -- 29-30: USO_statusVagas (sucesso 2)
        p_schema, v_tbl_statusVagas,                            -- 31-32: USO_statusVagas (sucesso 3)
        v_tipo_contagem, p_schema, v_tbl_feriados, v_formato_pg, -- 33-36: dias_abertura_ate_status

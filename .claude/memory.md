@@ -144,6 +144,43 @@ Tabelas V2 criadas com prefixo `V2_`:
 | V2_USO_historicoVagas | USO_historicoVagas | 589 |
 | V2_USO_historicoCandidatos | USO_historicoCandidatos | 1107 |
 
+### 3. appian
+| Parâmetro | Valor |
+|-----------|-------|
+| Cliente | appian |
+| Planilha | https://docs.google.com/spreadsheets/d/1aW71mfAHBSbzIeS9-be9qcpfzTWjzEPf/edit?gid=744894324#gid=744894324 |
+| Banco | HUB |
+| Schema | RPO_Appian |
+
+**NOTA:** Este dashboard é totalmente diferente dos anteriores (semper_laser/cielo). Não segue o padrão de tabelas RAW_AIRBYTE/USO/dicionário/MV. Estrutura própria e simplificada.
+
+**Tabelas:**
+| Tabela | Registros | Descrição |
+|--------|-----------|-----------|
+| `acompanhamento` | 50 | Dados de vagas importados via Airbyte |
+| `feriados` | 43 | Feriados (2024-2026) |
+| `dashboard` | 50 | Tabela calculada (recriada diariamente via pg_cron) |
+
+**Colunas da tabela `acompanhamento`:**
+id, cargo, etapa, e_mail, gestor, status (texto livre), destino, situacao, historico, recrutador, confidencial, descricao_de_cargo, abertura_da_vaga, envio_da_shortlist, proposta, admissao, planejamento_admissao
+
+**Tabela `dashboard` (colunas extras calculadas):**
+- `dias_shortlist` - Dias úteis entre abertura_da_vaga e envio_da_shortlist
+- `dias_proposta` - Dias úteis entre abertura_da_vaga e proposta
+- `dias_admissao` - Dias úteis entre abertura_da_vaga e admissao
+- Cálculo exclui sábados, domingos e feriados da tabela `feriados`
+
+**Função `dias_uteis(date, date)`:** Criada no schema RPO_Appian, calcula dias úteis entre duas datas.
+
+**Etapas (10):** Briefing, Descrição de Cargo, Divulgação/Hunting, Triagem/Entrevistas RH, Entrevistas Gestor, Proposta Salarial, Exames Médicos/Documentação/Mobilização, Admissão, Interrompido, Não iniciado
+
+**Situações (4):** Em andamento, Concluído, Interrompido, Planejado
+
+**Tipo contagem:** Dias úteis
+**Formato datas:** Timestamps (já em formato date no PostgreSQL)
+
+**pg_cron (job 123):** `0 1 * * *` - Recria tabela `dashboard` todos os dias à 1h da manhã
+
 <!-- CHAPTER: 3 Tabela de Configurações -->
 
 ## Tabela de Configurações (Padrão para todos os dashboards)
