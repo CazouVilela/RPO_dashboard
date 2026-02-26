@@ -183,6 +183,52 @@ id, cargo, etapa, e_mail, gestor, status (texto livre), destino, situacao, histo
 
 **Permissões:** `rpo_user` com USAGE no schema + SELECT em todas as tabelas + DEFAULT PRIVILEGES para tabelas futuras. Looker Studio conecta via `rpo_user`.
 
+### 4. santander
+| Parâmetro | Valor |
+|-----------|-------|
+| Cliente | santander |
+| Banco | HUB |
+| Schema | hubble |
+
+**NOTA:** Dashboard baseado em dados do Hubble (API interna). Estrutura diferente dos dashboards RPO tradicionais. Dados sincronizados via Airbyte das tabelas RAW_vacancies e RAW_candidates (todas as empresas). As MVs filtram apenas Santander.
+
+**Fluxo de dados:**
+1. Airbyte sincroniza RAW_vacancies e RAW_candidates (23h diariamente)
+2. pg_cron (1h) cria USO_ como cópia das RAW_ e recria as MVs
+
+**Tabelas no schema hubble:**
+| Tabela | Tipo | Registros | Descrição |
+|--------|------|-----------|-----------|
+| `RAW_vacancies` | BASE TABLE | 12.942 | Todas as vagas Hubble (Airbyte) |
+| `RAW_candidates` | BASE TABLE | 339.155 | Todos os candidatos Hubble (Airbyte) |
+| `USO_vacancies` | BASE TABLE | cópia RAW | Cópia diária (isolamento do Airbyte) |
+| `USO_candidates` | BASE TABLE | cópia RAW | Cópia diária (isolamento do Airbyte) |
+| `santander_vagas` | MV | 81 | Vagas Santander (createdAt > 2025-11-19) |
+| `santander_candidatos` | MV | 542 | Candidatos das vagas Santander |
+
+**Filtro santander_vagas:** `(company ->> 'title') = 'Santander' AND "createdAt"::date > '2025-11-19'`
+
+**santander_candidatos:** JOIN entre santander_vagas e USO_candidates via vaga_id/vacancy. Inclui dados de formação, histórico profissional, salários, diversidade, pipeline etc.
+
+**Campos calculados em santander_vagas:**
+- `cidade_normatizado` - Cidade extraída do nome da posição via regex
+- `uf_normatizado` - UF extraída do nome da posição via regex
+- Pipeline: candidatura, triagem, abordagem, entrevista, shortlist, entrevista_cliente, oferta, placed
+
+**Campos calculados em santander_candidatos:**
+- `candidato_salario_atual_normatizado` - Salário filtrado (499-8001)
+- `candidato_gap_salario_atual_normatizado` - Diferença salário base vaga vs atual candidato
+- `candidato_pretencao_normalizado` / `candidato_gap_pretencao_normalizado` - Idem para pretensão
+- `candidato_formacao` - Agregação de formações acadêmicas
+- `candidato_ultimo_cargo` / `candidato_ultima_empresa` - Do histórico profissional
+- `candidato_historico_profissional` - Texto agregado completo
+
+**pg_cron (job 124):** `0 1 * * *` - Recria USO_ + MVs santander todos os dias à 1h da manhã
+
+**Permissões:** `rpo_user` com SELECT em todas as tabelas e MVs. Looker Studio conecta via `rpo_user`.
+
+**Limpeza (2026-02-26):** 21 tabelas não utilizadas removidas do schema hubble (RAW2_, RAW3_, hubble2, candidates_limpa, vacancies_limpa, tabelas hash Airbyte).
+
 <!-- CHAPTER: 3 Tabela de Configurações -->
 
 ## Tabela de Configurações (Padrão para todos os dashboards)
