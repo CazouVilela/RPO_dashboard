@@ -158,16 +158,18 @@ Tabelas V2 criadas com prefixo `V2_`:
 | Tabela | Registros | Descrição |
 |--------|-----------|-----------|
 | `acompanhamento` | 50 | Dados de vagas importados via Airbyte |
-| `feriados` | 43 | Feriados (2024-2026) |
+| `feriados` | 54 | Feriados (2024-2026) |
 | `dashboard` | 50 | Tabela calculada (recriada diariamente via pg_cron) |
 
-**Colunas da tabela `acompanhamento`:**
-id, cargo, etapa, e_mail, gestor, status (texto livre), destino, situacao, historico, recrutador, confidencial, descricao_de_cargo, abertura_da_vaga, envio_da_shortlist, proposta, admissao, planejamento_admissao
+**Colunas da tabela `acompanhamento` (atualizado 2026-03-03):**
+id, low, cargo, etapa, e_mail, gestor, status (texto livre), destino, situacao, historico, recrutador, confidencial, descricao_de_cargo, alinhamento_de_perfil (timestamptz), envio_da_shortlist (timestamptz), proposta (timestamptz), admissao (timestamptz), planejamento_admissao (timestamptz)
+
+**NOTA:** Coluna `abertura_da_vaga` foi renomeada para `alinhamento_de_perfil` na planilha de origem (2026-03-03). Nova coluna `low` (bigint) adicionada. Datas mudaram de varchar para timestamptz.
 
 **Tabela `dashboard` (colunas extras calculadas):**
-- `dias_shortlist` - Dias úteis entre abertura_da_vaga e envio_da_shortlist
-- `dias_proposta` - Dias úteis entre abertura_da_vaga e proposta
-- `dias_admissao` - Dias úteis entre abertura_da_vaga e admissao
+- `dias_shortlist` - Dias úteis entre alinhamento_de_perfil e envio_da_shortlist
+- `dias_proposta` - Dias úteis entre alinhamento_de_perfil e proposta
+- `dias_admissao` - Dias úteis entre alinhamento_de_perfil e admissao
 - Cálculo exclui sábados, domingos e feriados da tabela `feriados`
 
 **Função `dias_uteis(date, date)`:** Criada no schema RPO_Appian, calcula dias úteis entre duas datas.
