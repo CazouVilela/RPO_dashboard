@@ -21,16 +21,23 @@ Since we only extracted STATUS changes from version history, this script will:
 - Leave cdd_* and selecionado_* fields empty (we don't have that historical data)
 """
 
+import os
+import sys
 import psycopg2
 from datetime import datetime
 
+# Carrega config/.env via loader
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'config'))
+import importlib
+importlib.import_module('env.config')
+
 # Database connection
 DB_CONFIG = {
-    'host': 'localhost',
-    'port': 5432,
-    'database': 'HUB',
-    'user': 'rpo_user',
-    'password': 'rpo_super_secret001'
+    'host': os.environ.get('DB_HOST', 'localhost'),
+    'port': int(os.environ.get('DB_PORT', '5432')),
+    'database': os.environ.get('DB_NAME', 'HUB'),
+    'user': os.environ.get('DB_USER', 'cazouvilela'),
+    'password': os.environ.get('DB_PASSWORD', '')
 }
 
 # Map short names to emails (based on USO_historicoVagas data)
