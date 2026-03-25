@@ -6,7 +6,7 @@
 
 ## Sobre o Projeto
 
-Dashboard para visualização e análise de dados das planilhas de RPO criadas no projeto RPO-V4.
+Dashboard para visualização e análise de dados das planilhas de RPO criadas no projeto RPO.
 Este projeto controla dashboards diferentes para clientes diferentes.
 
 ## Informações Principais
@@ -83,7 +83,7 @@ Cada dashboard possui os seguintes parâmetros:
 - 9 unique editors: Jessica, Emily, Carolina, Gessica, Ariane, Liliane, Cazou, Taina, Gabrielle
 - Colunas: id, rp, old_status, new_status, change_datetime, changed_by, revision_id, prev_revision_id
 - Extraída via CDP (Chrome DevTools Protocol) do histórico de versões do Google Sheets
-- Scripts em `/home/cazouvilela/projetos/RPO-V4/api_historico/`: cdp_map_rev_ids.js, extract_status_changes.py
+- Scripts em `/home/cazouvilela/projetos/RPO/api_historico/`: cdp_map_rev_ids.js, extract_status_changes.py
 - A coluna "Log de atividades" (AQ) da planilha foi rejeitada como não confiável pelo usuário
 
 **Tabela log_history_rebuild (reconstrução COMPLETA do histórico simulando AppScript):**
@@ -464,7 +464,7 @@ SELECT * FROM "RPO_cliente"."RAW_AIRBYTE_FALLBACK_historicoCandidatos";
 -- ============================================================
 -- 1.14 PERMISSÕES PARA rpo_user (OBRIGATÓRIO)
 -- ============================================================
--- O usuário rpo_user é usado pela API do RPO-V4 para acessar os dados.
+-- O usuário rpo_user é usado pela API do RPO para acessar os dados.
 -- TODAS as tabelas USO_ devem ter permissões concedidas.
 
 -- Permissões no schema
@@ -1207,7 +1207,7 @@ PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p $DB_PORT -U $DB_USER -d $DB_NAME
 
 **Configuração atual (.env):**
 - **Host**: /var/run/postgresql (socket Unix local)
-- **Porta**: 5432
+- **Porta**: 15432
 - **Banco**: HUB
 - **Usuário**: cazouvilela
 - **Schemas**: RPO_[cliente]
@@ -1502,7 +1502,7 @@ FROM "RPO_cliente"."USO_statusVagas";
 
 ### Bug: Permissões insuficientes para rpo_user (Corrigido em 2026-02-02)
 
-**Problema:** O usuário `rpo_user` (usado pela API do RPO-V4) não conseguia acessar tabelas e views criadas no PostgreSQL. Erros como "permissão negada para tabela" ou "relação não existe" ocorriam ao tentar SELECT.
+**Problema:** O usuário `rpo_user` (usado pela API do RPO) não conseguia acessar tabelas e views criadas no PostgreSQL. Erros como "permissão negada para tabela" ou "relação não existe" ocorriam ao tentar SELECT.
 
 **Causa raiz:** As tabelas USO_ e views/MVs eram criadas pelo usuário `cazouvilela`, mas sem GRANT explícito para `rpo_user`. Quando a API tentava acessar usando `rpo_user`, recebia erro de permissão.
 
@@ -1651,7 +1651,7 @@ formatos = [
 
 **Problema:** O worker `worker_sheets_sync.js` usava `formatDateBR()` hardcoded para DD/MM/YYYY, ignorando a configuração "Formato das datas" em `configuracoesGerais`. Semper Laser usa formato americano (MM/DD/YYYY) mas recebia datas em formato brasileiro.
 
-**Correções no worker (`/home/cazouvilela/projetos/RPO-V4/api_historico/worker_sheets_sync.js`):**
+**Correções no worker (`/home/cazouvilela/projetos/RPO/api_historico/worker_sheets_sync.js`):**
 
 1. **`getDateFormat(spreadsheetId)`** - Lê "Formato das datas" da aba `configuracoesGerais`, cache de 10 minutos, default `brasileiro`
 2. **`formatDate(date, formato)`** - Substitui `formatDateBR()`. Suporta `brasileiro` (DD/MM/YYYY) e `americano` (MM/DD/YYYY)
@@ -1717,7 +1717,7 @@ Todos os 4 schemas rodando sem erros:
 
 ### Nota: schemas.json - RPO_cielo e RPO_cielo_dev apontam para a mesma planilha
 
-**Arquivo:** `/home/cazouvilela/projetos/RPO-V4/api_historico/schemas.json`
+**Arquivo:** `/home/cazouvilela/projetos/RPO/api_historico/schemas.json`
 
 Ambos `RPO_cielo` e `RPO_cielo_dev` usam o mesmo `spreadsheetId`: `1swF0vtbgftzFIKXFnUAf3Osn9tkR3XB1J-Y3zxrhTN0`. O worker sincroniza ambos os schemas para a mesma planilha.
 
@@ -1739,7 +1739,7 @@ Ambos `RPO_cielo` e `RPO_cielo_dev` usam o mesmo `spreadsheetId`: `1swF0vtbgftzF
 
 ## Referências
 
-- Projeto RPO-V4: /home/cazouvilela/projetos/RPO-V4
+- Projeto RPO: /home/cazouvilela/projetos/RPO
 - [TEMPLATE_PROJETO.md](.claude/TEMPLATE_PROJETO.md) - Template de organização
 
 ---

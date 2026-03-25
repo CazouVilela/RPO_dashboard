@@ -1,6 +1,6 @@
 # RPO_dashboard
 
-Dashboard para visualização e análise de dados das planilhas de RPO criadas no projeto RPO-V4.
+Dashboard para visualização e análise de dados das planilhas de RPO criadas no projeto RPO.
 
 ## Estrutura
 
@@ -35,7 +35,7 @@ Funções PostgreSQL para criação dinâmica de views e materialized views:
 
 Todas as funções suportam versionamento via parâmetro `p_versao` (ex: `'V2'`).
 
-## Infraestrutura relacionada (RPO-V4)
+## Infraestrutura relacionada (RPO)
 
 | Componente | Descrição |
 |------------|-----------|

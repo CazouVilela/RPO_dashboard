@@ -72,7 +72,7 @@ O script deve:
 
 ### Referencia: script CDP existente
 - `/home/cazouvilela/projetos/RPO_dashboard/scripts/history_extraction/write_cells_v2.js`
-- Usa: ws module em `/home/cazouvilela/projetos/RPO-V4/api_historico/node_modules/ws`
+- Usa: ws module em `/home/cazouvilela/projetos/RPO/api_historico/node_modules/ws`
 - Padrao: createCDP -> pressKey -> Input.insertText
 
 ### Mapeamento linha planilha por ID

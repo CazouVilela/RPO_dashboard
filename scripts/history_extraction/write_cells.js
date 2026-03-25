@@ -1,4 +1,4 @@
-const WebSocket = require('/home/cazouvilela/projetos/RPO-V4/api_historico/node_modules/ws');
+const WebSocket = require('/home/cazouvilela/projetos/RPO/api_historico/node_modules/ws');
 const fs = require('fs');
 
 const PAGE_WS = process.argv[2] || 'ws://localhost:9222/devtools/page/2F720762C71188EDDF01DC8841DDD4AB';
